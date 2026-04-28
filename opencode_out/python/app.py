@@ -3,6 +3,7 @@ import json
 import re
 import glob as glob_module
 import fnmatch
+import subprocess
 import requests
 from flask import Flask, send_file, request, jsonify, send_from_directory, Response, stream_with_context
 from python.config import API_URL, MODEL, HOST, PORT, WORKING_DIR
@@ -134,6 +135,34 @@ TOOLS = [
                     "replaceAll": {"type": "boolean", "description": "Replace all occurrences (default false)", "default": False}
                 },
                 "required": ["filePath", "oldString", "newString"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "terminal",
+            "description": "Execute shell commands. Returns stdout/stderr.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to run"}
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "python",
+            "description": "Execute Python code and return the output.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "Python code to execute"}
+                },
+                "required": ["code"]
             }
         }
     }
@@ -321,6 +350,59 @@ def tool_edit(filePath, oldString, newString, replaceAll=False):
         return f"Edit error: {e}"
 
 
+def tool_terminal(command):
+    global working_dir
+    if not working_dir:
+        return "Error: No working directory set. Use /set_working_dir first."
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            cwd=working_dir,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        output = []
+        if result.stdout:
+            output.append(result.stdout)
+        if result.stderr:
+            output.append(result.stderr)
+        if result.returncode != 0 and not result.stdout and not result.stderr:
+            output.append(f"exit code: {result.returncode}")
+        return "\n".join(output) if output else "(no output)"
+    except subprocess.TimeoutExpired:
+        return "Error: Command timed out (30s limit)"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def tool_python(code):
+    global working_dir
+    if not working_dir:
+        return "Error: No working directory set. Use /set_working_dir first."
+    try:
+        result = subprocess.run(
+            ["python3", "-c", code],
+            cwd=working_dir,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        output = []
+        if result.stdout:
+            output.append(result.stdout)
+        if result.stderr:
+            output.append(f"Error: {result.stderr}")
+        return "\n".join(output) if output else "(no output)"
+    except FileNotFoundError:
+        return "Error: Python3 not found"
+    except subprocess.TimeoutExpired:
+        return "Error: Code execution timed out (30s limit)"
+    except Exception as e:
+        return f"Error: {e}"
+
+
 def run_tool(name, args):
     if name == "web_search":
         return websearch(args.get("query", ""), args.get("num_results", 8))
@@ -336,6 +418,10 @@ def run_tool(name, args):
         return tool_write(args.get("content", ""), args.get("filePath", ""))
     elif name == "edit":
         return tool_edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), args.get("replaceAll", False))
+    elif name == "terminal":
+        return tool_terminal(args.get("command", ""))
+    elif name == "python":
+        return tool_python(args.get("code", ""))
     return f"Unknown tool: {name}"
 
 

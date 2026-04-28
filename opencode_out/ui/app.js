@@ -331,7 +331,7 @@ function createToolPill(name, args) {
         label = `running&nbsp;<em>${escHtml(name)}</em>`;
     }
 
-    div.innerHTML = `<span class="tool-spinner"></span>${icon}<span>${label}</span>`;
+    div.innerHTML = `<span class="tool-spinner"></span>${icon}<span class="tool-label">${label}</span>`;
     chat.appendChild(div);
     scrollBottom();
     return div;
