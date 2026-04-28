@@ -213,11 +213,41 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_FOLDER_PICKER && resultCode == RESULT_OK && data != null) {
             Uri treeUri = data.getData();
-            selectedFolderPath = treeUri.getPath();
+            String path = treeUri.getPath();
+            
+            if (path != null) {
+                // Parse SAF URI path to absolute path
+                if (path.contains(":")) {
+                    String[] split = path.split(":");
+                    String type = split[0];
+                    String relativePath = split.length > 1 ? split[1] : "";
+
+                    // If it's the primary storage (internal storage)
+                    if (type.endsWith("primary")) {
+                        selectedFolderPath = Environment.getExternalStorageDirectory().getAbsolutePath();
+                        if (!relativePath.isEmpty()) {
+                            selectedFolderPath += "/" + relativePath;
+                        }
+                    } else {
+                        // If it's an external SD card or another volume
+                        String volumeId = type.substring(type.lastIndexOf('/') + 1);
+                        selectedFolderPath = "/storage/" + volumeId;
+                        if (!relativePath.isEmpty()) {
+                            selectedFolderPath += "/" + relativePath;
+                        }
+                    }
+                } else {
+                    selectedFolderPath = path;
+                }
+            }
+
             // Take persistent permission
             getContentResolver().takePersistableUriPermission(treeUri,
                 Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
             prefs.edit().putString("working_dir", selectedFolderPath).apply();
+            
+            // Reload the frontend so it picks up the new working directory
+            webView.reload();
         }
     }
 
