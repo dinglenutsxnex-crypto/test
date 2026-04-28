@@ -154,6 +154,7 @@ public class MainActivity extends Activity {
         s.setDomStorageEnabled(true);
         s.setAllowFileAccess(true);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        webView.addJavascriptInterface(new AndroidBridge(), "Android");
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
@@ -162,48 +163,49 @@ public class MainActivity extends Activity {
         });
     }
 
+    // JS Bridge interface
+    class AndroidBridge {
+        @JavascriptInterface
+        public String getWorkingDir() {
+            return selectedFolderPath != null ? selectedFolderPath : "";
+        }
+
+        @JavascriptInterface
+        public void setWorkingDir(String path) {
+            selectedFolderPath = path;
+            prefs.edit().putString("working_dir", path).apply();
+        }
+
+        @JavascriptInterface
+        public void openFolderPicker() {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            startActivityForResult(intent, REQUEST_FOLDER_PICKER);
+        }
+
+        @JavascriptInterface
+        public String listFiles(String path) {
+            if (path == null || path.isEmpty()) {
+                path = Environment.getExternalStorageDirectory().getAbsolutePath();
+            }
+            File dir = new File(path);
+            if (!dir.exists() || !dir.isDirectory()) {
+                return "[]";
+            }
+            List<String> files = new ArrayList<>();
+            File[] items = dir.listFiles();
+            if (items != null) {
+                for (File f : items) {
+                    files.add(f.getName() + (f.isDirectory() ? "/" : ""));
+                }
+            }
+            return files.toString();
+        }
+    }
+
     @Override
     public void onBackPressed() {
         if (webView != null && webView.canGoBack()) webView.goBack();
         else super.onBackPressed();
-    }
-
-    // ── JS Bridge for file operations ───────────────────────────────────────
-
-    @JavascriptInterface
-    public String getWorkingDir() {
-        return selectedFolderPath != null ? selectedFolderPath : "";
-    }
-
-    @JavascriptInterface
-    public void setWorkingDir(String path) {
-        selectedFolderPath = path;
-        prefs.edit().putString("working_dir", path).apply();
-    }
-
-    @JavascriptInterface
-    public void openFolderPicker() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-        startActivityForResult(intent, REQUEST_FOLDER_PICKER);
-    }
-
-    @JavascriptInterface
-    public String listFiles(String path) {
-        if (path == null || path.isEmpty()) {
-            path = Environment.getExternalStorageDirectory().getAbsolutePath();
-        }
-        File dir = new File(path);
-        if (!dir.exists() || !dir.isDirectory()) {
-            return "[]";
-        }
-        List<String> files = new ArrayList<>();
-        File[] items = dir.listFiles();
-        if (items != null) {
-            for (File f : items) {
-                files.add(f.getName() + (f.isDirectory() ? "/" : ""));
-            }
-        }
-        return files.toString();
     }
 
     @Override
