@@ -253,11 +253,12 @@ public class MainActivity extends Activity {
             }
 
             prefs.edit().putString("working_dir", selectedFolderPath).apply();
-            
-            // 3. 500ms delay wait fix before reloading the UI
+
+            final String finalPath = selectedFolderPath;
             new Handler(Looper.getMainLooper()).postDelayed(() -> {
                 if (webView != null) {
-                    webView.reload();
+                    String escaped = finalPath.replace("\\", "\\\\").replace("'", "\\'");
+                    webView.evaluateJavascript("setWorkingDir('" + escaped + "')", null);
                 }
             }, 500);
         }

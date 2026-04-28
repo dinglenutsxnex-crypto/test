@@ -32,6 +32,11 @@ async function loadWorkingDir() {
     if (workingDir) {
         folderPath.textContent = workingDir;
         localStorage.setItem('working_dir', workingDir);
+        await fetch('/working_dir', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ working_dir: workingDir })
+        });
         await loadFileTree();
     }
 }
@@ -93,17 +98,10 @@ folderBtn.onclick = () => {
     if (android && android.openFolderPicker) {
         android.openFolderPicker();
     } else {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.webkitdirectory = true;
-        input.onchange = async () => {
-            const files = input.files;
-            if (files.length > 0) {
-                const path = files[0].webkitRelativePath.split('/')[0];
-                await setWorkingDir(path);
-            }
-        };
-        input.click();
+        const path = prompt('Enter absolute folder path:');
+        if (path && path.trim()) {
+            setWorkingDir(path.trim());
+        }
     }
 };
 
@@ -505,6 +503,11 @@ async function init() {
     workingDir = localStorage.getItem('working_dir') || '';
     if (workingDir) {
         folderPath.textContent = workingDir;
+        await fetch('/working_dir', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ working_dir: workingDir })
+        });
         await loadFileTree();
     }
     setLoading(false);
