@@ -202,20 +202,16 @@ def tool_glob(pattern, path=None):
     base = resolve_path(path) if path else working_dir
     if not is_within_dir(base, working_dir):
         return f"Error: Path '{path}' is outside working directory"
-    matches = []
     try:
-        for root, dirs, files in os.walk(base):
-            if not is_within_dir(root, working_dir):
-                continue
-            for name in files + dirs:
-                if fnmatch.fnmatch(name, pattern):
-                    rel = os.path.relpath(os.path.join(root, name), base)
-                    matches.append(rel)
+        full_pattern = os.path.join(base, pattern)
+        matches = glob_module.glob(full_pattern, recursive=True)
+        matches = [m for m in matches if is_within_dir(m, working_dir)]
+        if not matches:
+            return f"No files matching '{pattern}'"
+        rel_matches = [os.path.relpath(m, base) for m in matches[:100]]
+        return "Found files:\n" + "\n".join(rel_matches)
     except Exception as e:
         return f"Glob error: {e}"
-    if not matches:
-        return f"No files matching '{pattern}'"
-    return "Found files:\n" + "\n".join(matches[:100])
 
 
 def tool_grep(pattern, path=None, include=None):
@@ -378,6 +374,10 @@ def list_dir():
     full_path = resolve_path(path) if path else working_dir
     if not is_within_dir(full_path, working_dir):
         return jsonify({"error": "Path outside working directory"})
+    if not os.path.isdir(full_path):
+        return jsonify({"error": f"Not a directory: {path}"})
+    if not os.access(full_path, os.R_OK):
+        return jsonify({"error": f"Permission denied: {path}", "permission_error": True})
     try:
         items = []
         for name in os.listdir(full_path):
@@ -401,7 +401,15 @@ def chat():
     cwd_hint = data.get("working_dir", working_dir)
     history.append({"role": "user", "content": user_msg})
 
-    system_msg = {"role": "system", "content": f"Working directory: {working_dir or '(not set)'}"} if working_dir else {"role": "system", "content": "No working directory set. Ask user to select a project folder first."}
+    if working_dir:
+        try:
+            top_files = sorted(os.listdir(working_dir))[:30]
+            file_hint = "\n".join(top_files)
+        except Exception:
+            file_hint = "(unreadable)"
+        system_msg = {"role": "system", "content": f"Working directory: {working_dir}\nTop-level contents:\n{file_hint}\n\nAlways use tools relative to the working directory. Never navigate above it."}
+    else:
+        system_msg = {"role": "system", "content": "No working directory set. Ask user to select a project folder first."}
     msgs_with_sys = [system_msg] + list(history)
 
     def generate():

@@ -70,7 +70,14 @@ async function loadFileTree() {
         const resp = await fetch('/ls?path=' + encodeURIComponent(workingDir));
         const data = await resp.json();
         if (data.error) {
-            fileTree.innerHTML = '<div class="file-tree-item">' + escHtml(data.error) + '</div>';
+            if (data.permission_error) {
+                workingDir = '';
+                localStorage.removeItem('working_dir');
+                await fetch('/working_dir', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ working_dir: '' }) });
+                fileTree.innerHTML = '<div class="file-tree-item">⚠ ' + escHtml(data.error) + ' — folder cleared, please select a new one.</div>';
+            } else {
+                fileTree.innerHTML = '<div class="file-tree-item">' + escHtml(data.error) + '</div>';
+            }
             return;
         }
         fileTree.innerHTML = data.items.map(item => {
