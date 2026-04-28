@@ -114,13 +114,13 @@ public class MainActivity extends Activity {
         }
     }
 
-    // When user comes back from the MANAGE_EXTERNAL_STORAGE settings page,
-    // Flask is already running — just reload the WebView.
+    // When user comes back from the MANAGE_EXTERNAL_STORAGE settings page
     @Override
     protected void onResume() {
         super.onResume();
         if (returningFromSettings) {
             returningFromSettings = false;
+            // 500ms delay wait fix after returning from settings
             new Handler(Looper.getMainLooper()).postDelayed(
                 () -> webView.loadUrl(FLASK_URL), 500);
         }
@@ -213,23 +213,34 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_FOLDER_PICKER && resultCode == RESULT_OK && data != null) {
             Uri treeUri = data.getData();
-            String path = treeUri.getPath();
+            if (treeUri == null) return;
             
+            // 1. Take persistent permission immediately
+            getContentResolver().takePersistableUriPermission(treeUri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+
+            // 2. Parse SAF URI path to bulletproof absolute POSIX path
+            String path = treeUri.getPath();
+            String authority = treeUri.getAuthority();
+
             if (path != null) {
-                // Parse SAF URI path to absolute path
-                if (path.contains(":")) {
-                    String[] split = path.split(":");
+                if ("com.android.providers.downloads.documents".equals(authority)) {
+                    // Handles the case where user explicitly selects "Downloads" provider
+                    selectedFolderPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath();
+                } 
+                else if (path.contains(":")) {
+                    // limit to 2 splits so folders with colons in name don't break
+                    String[] split = path.split(":", 2); 
                     String type = split[0];
                     String relativePath = split.length > 1 ? split[1] : "";
 
-                    // If it's the primary storage (internal storage)
                     if (type.endsWith("primary")) {
                         selectedFolderPath = Environment.getExternalStorageDirectory().getAbsolutePath();
                         if (!relativePath.isEmpty()) {
                             selectedFolderPath += "/" + relativePath;
                         }
                     } else {
-                        // If it's an external SD card or another volume
+                        // External SD card
                         String volumeId = type.substring(type.lastIndexOf('/') + 1);
                         selectedFolderPath = "/storage/" + volumeId;
                         if (!relativePath.isEmpty()) {
@@ -241,13 +252,14 @@ public class MainActivity extends Activity {
                 }
             }
 
-            // Take persistent permission
-            getContentResolver().takePersistableUriPermission(treeUri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
             prefs.edit().putString("working_dir", selectedFolderPath).apply();
             
-            // Reload the frontend so it picks up the new working directory
-            webView.reload();
+            // 3. 500ms delay wait fix before reloading the UI
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                if (webView != null) {
+                    webView.reload();
+                }
+            }, 500);
         }
     }
 
