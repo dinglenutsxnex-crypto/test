@@ -410,7 +410,12 @@ body { display: flex; }
     transition: color .3s;
     white-space: nowrap;
     overflow: hidden;
+}
+
+.tool-pill span:last-of-type {
+    overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .tool-pill em {
