@@ -1,21 +1,44 @@
 import os
 import json
 import re
+import uuid
 import glob as glob_module
 import fnmatch
 import requests
 from flask import Flask, send_file, request, jsonify, send_from_directory, Response, stream_with_context
-from python.config import API_URL, MODEL, HOST, PORT, WORKING_DIR
+from python.config import API_URL, MODEL, HOST, PORT, STORAGE_PATH
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 app = Flask(__name__, template_folder=ROOT, static_folder=ROOT + '/ui')
 
-history = []
-working_dir = WORKING_DIR
+# In‑memory chats dict: id -> { id, title, working_dir, model, messages }
+chats = {}
 
-def resolve_path(path, cwd=None):
-    if not cwd:
-        cwd = working_dir
+# ── Initialisation ──────────────────────────────────────────────────
+def init_chats():
+    global chats
+    if not STORAGE_PATH:
+        return
+    opencode_dir = os.path.join(STORAGE_PATH, "opencode")
+    os.makedirs(opencode_dir, exist_ok=True)
+    for filename in os.listdir(opencode_dir):
+        if filename.endswith('.json'):
+            try:
+                with open(os.path.join(opencode_dir, filename), 'r') as f:
+                    chat = json.load(f)
+                    chats[chat['id']] = chat
+            except Exception:
+                pass
+
+def save_chat(chat_id):
+    """Persist a single chat to its JSON file."""
+    opencode_dir = os.path.join(STORAGE_PATH, "opencode")
+    filepath = os.path.join(opencode_dir, f"{chat_id}.json")
+    with open(filepath, 'w') as f:
+        json.dump(chats[chat_id], f, indent=2)
+
+# ── Path helpers ────────────────────────────────────────────────────
+def resolve_path(path, cwd):
     if not cwd:
         return None
     path = path.strip()
@@ -28,6 +51,7 @@ def is_within_dir(path, dir_path):
     abs_dir = os.path.abspath(dir_path)
     return abs_path.startswith(abs_dir + os.sep) or abs_path == abs_dir
 
+# ── Tools ───────────────────────────────────────────────────────────
 TOOLS = [
     {
         "type": "function",
@@ -154,7 +178,6 @@ def strip_html(html):
     html = re.sub(r'[ \t]+', ' ', html)
     return html.strip()
 
-
 def websearch(query, num_results=8):
     try:
         resp = requests.get(
@@ -182,7 +205,6 @@ def websearch(query, num_results=8):
     except Exception as e:
         return f"Search error: {e}"
 
-
 def webfetch(url):
     try:
         resp = requests.get(
@@ -194,18 +216,16 @@ def webfetch(url):
     except Exception as e:
         return f"Fetch error: {e}"
 
-
-def tool_glob(pattern, path=None):
-    global working_dir
-    if not working_dir:
-        return "No working directory set. Use /set_working_dir to set it first."
-    base = resolve_path(path) if path else working_dir
-    if not is_within_dir(base, working_dir):
+def tool_glob(pattern, path, cwd):
+    if not cwd:
+        return "No working directory set."
+    base = resolve_path(path, cwd) if path else cwd
+    if not is_within_dir(base, cwd):
         return f"Error: Path '{path}' is outside working directory"
     try:
         full_pattern = os.path.join(base, pattern)
         matches = glob_module.glob(full_pattern, recursive=True)
-        matches = [m for m in matches if is_within_dir(m, working_dir)]
+        matches = [m for m in matches if is_within_dir(m, cwd)]
         if not matches:
             return f"No files matching '{pattern}'"
         rel_matches = [os.path.relpath(m, base) for m in matches[:100]]
@@ -213,13 +233,11 @@ def tool_glob(pattern, path=None):
     except Exception as e:
         return f"Glob error: {e}"
 
-
-def tool_grep(pattern, path=None, include=None):
-    global working_dir
-    if not working_dir:
-        return "No working directory set. Use /set_working_dir to set it first."
-    base = resolve_path(path) if path else working_dir
-    if not is_within_dir(base, working_dir):
+def tool_grep(pattern, path, include, cwd):
+    if not cwd:
+        return "No working directory set."
+    base = resolve_path(path, cwd) if path else cwd
+    if not is_within_dir(base, cwd):
         return f"Error: Path '{path}' is outside working directory"
     try:
         regex = re.compile(pattern)
@@ -228,7 +246,7 @@ def tool_grep(pattern, path=None, include=None):
     results = []
     try:
         for root, dirs, files in os.walk(base):
-            if not is_within_dir(root, working_dir):
+            if not is_within_dir(root, cwd):
                 continue
             for name in files:
                 if include and not fnmatch.fnmatch(name, include):
@@ -252,13 +270,11 @@ def tool_grep(pattern, path=None, include=None):
         return f"No matches for '{pattern}'"
     return "Matches:\n" + "\n".join(results[:100])
 
-
-def tool_read(filePath, offset=None, limit=None):
-    global working_dir
-    if not working_dir:
-        return "No working directory set. Use /set_working_dir to set it first."
-    full_path = resolve_path(filePath)
-    if not full_path or not is_within_dir(full_path, working_dir):
+def tool_read(filePath, offset, limit, cwd):
+    if not cwd:
+        return "No working directory set."
+    full_path = resolve_path(filePath, cwd)
+    if not full_path or not is_within_dir(full_path, cwd):
         return f"Error: Path '{filePath}' is outside working directory"
     if not os.path.isfile(full_path):
         return f"Error: File not found: {filePath}"
@@ -277,13 +293,11 @@ def tool_read(filePath, offset=None, limit=None):
     except Exception as e:
         return f"Read error: {e}"
 
-
-def tool_write(content, filePath):
-    global working_dir
-    if not working_dir:
-        return "No working directory set. Use /set_working_dir to set it first."
-    full_path = resolve_path(filePath)
-    if not full_path or not is_within_dir(full_path, working_dir):
+def tool_write(content, filePath, cwd):
+    if not cwd:
+        return "No working directory set."
+    full_path = resolve_path(filePath, cwd)
+    if not full_path or not is_within_dir(full_path, cwd):
         return f"Error: Path '{filePath}' is outside working directory"
     try:
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
@@ -293,13 +307,11 @@ def tool_write(content, filePath):
     except Exception as e:
         return f"Write error: {e}"
 
-
-def tool_edit(filePath, oldString, newString, replaceAll=False):
-    global working_dir
-    if not working_dir:
-        return "No working directory set. Use /set_working_dir to set it first."
-    full_path = resolve_path(filePath)
-    if not full_path or not is_within_dir(full_path, working_dir):
+def tool_edit(filePath, oldString, newString, replaceAll, cwd):
+    if not cwd:
+        return "No working directory set."
+    full_path = resolve_path(filePath, cwd)
+    if not full_path or not is_within_dir(full_path, cwd):
         return f"Error: Path '{filePath}' is outside working directory"
     if not os.path.isfile(full_path):
         return f"Error: File not found: {filePath}"
@@ -320,25 +332,24 @@ def tool_edit(filePath, oldString, newString, replaceAll=False):
     except Exception as e:
         return f"Edit error: {e}"
 
-
-def run_tool(name, args):
+def run_tool(name, args, cwd):
     if name == "web_search":
         return websearch(args.get("query", ""), args.get("num_results", 8))
     elif name == "web_fetch":
         return webfetch(args.get("url", ""))
     elif name == "glob":
-        return tool_glob(args.get("pattern", "*"), args.get("path"))
+        return tool_glob(args.get("pattern", "*"), args.get("path"), cwd)
     elif name == "grep":
-        return tool_grep(args.get("pattern", ""), args.get("path"), args.get("include"))
+        return tool_grep(args.get("pattern", ""), args.get("path"), args.get("include"), cwd)
     elif name == "read":
-        return tool_read(args.get("filePath", ""), args.get("offset"), args.get("limit"))
+        return tool_read(args.get("filePath", ""), args.get("offset"), args.get("limit"), cwd)
     elif name == "write":
-        return tool_write(args.get("content", ""), args.get("filePath", ""))
+        return tool_write(args.get("content", ""), args.get("filePath", ""), cwd)
     elif name == "edit":
-        return tool_edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), args.get("replaceAll", False))
+        return tool_edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), args.get("replaceAll", False), cwd)
     return f"Unknown tool: {name}"
 
-
+# ── Routes ──────────────────────────────────────────────────────────
 @app.route("/")
 def home():
     return send_file(os.path.join(ROOT, "index.html"))
@@ -347,79 +358,106 @@ def home():
 def static_files(filename):
     return send_from_directory(ROOT + '/ui', filename)
 
-@app.route("/working_dir", methods=["GET"])
-def get_working_dir():
-    return jsonify({"working_dir": working_dir})
+# ── Chat management ─────────────────────────────────────────────────
+@app.route("/chats", methods=["GET"])
+def list_chats():
+    """Return all chats with summary info (no full messages)."""
+    chat_list = []
+    for c in chats.values():
+        chat_list.append({
+            "id": c["id"],
+            "title": c["title"],
+            "working_dir": c["working_dir"],
+            "model": c["model"]
+        })
+    return jsonify(chat_list)
 
-@app.route("/working_dir", methods=["POST"])
-def set_working_dir():
-    global working_dir
-    data = request.json
-    new_dir = data.get("working_dir", "")
-    if new_dir and os.path.isdir(new_dir):
-        working_dir = new_dir
-        return jsonify({"status": "ok", "working_dir": working_dir})
-    elif new_dir:
-        return jsonify({"status": "error", "message": "Invalid directory"})
-    else:
-        working_dir = ""
-        return jsonify({"status": "ok", "working_dir": ""})
+@app.route("/chats", methods=["POST"])
+def create_chat():
+    """Create a brand‑new chat and return it."""
+    chat_id = str(uuid.uuid4())
+    chat = {
+        "id": chat_id,
+        "title": "New Chat",
+        "working_dir": "",
+        "model": MODEL,
+        "messages": []
+    }
+    chats[chat_id] = chat
+    save_chat(chat_id)
+    return jsonify(chat)
 
-@app.route("/ls", methods=["GET"])
-def list_dir():
-    global working_dir
-    path = request.args.get("path", working_dir)
-    if not working_dir:
-        return jsonify({"error": "No working directory set"})
-    full_path = resolve_path(path) if path else working_dir
-    if not is_within_dir(full_path, working_dir):
-        return jsonify({"error": "Path outside working directory"})
-    if not os.path.isdir(full_path):
-        return jsonify({"error": f"Not a directory: {path}"})
-    if not os.access(full_path, os.R_OK):
-        return jsonify({"error": f"Permission denied: {path}", "permission_error": True})
+@app.route("/chats/<chat_id>", methods=["PUT"])
+def update_chat(chat_id):
+    """Update title, working_dir and/or model."""
+    if chat_id not in chats:
+        return jsonify({"error": "Chat not found"}), 404
+    data = request.json or {}
+    if "title" in data:
+        chats[chat_id]["title"] = data["title"]
+    if "working_dir" in data:
+        chats[chat_id]["working_dir"] = data["working_dir"]
+    if "model" in data:
+        chats[chat_id]["model"] = data["model"]
+    save_chat(chat_id)
+    return jsonify(chats[chat_id])
+
+@app.route("/chats/<chat_id>", methods=["DELETE"])
+def delete_chat(chat_id):
+    """Remove a chat and its file."""
+    if chat_id not in chats:
+        return jsonify({"error": "Chat not found"}), 404
+    del chats[chat_id]
+    opencode_dir = os.path.join(STORAGE_PATH, "opencode")
+    filepath = os.path.join(opencode_dir, f"{chat_id}.json")
     try:
-        items = []
-        for name in os.listdir(full_path):
-            fpath = os.path.join(full_path, name)
-            items.append({
-                "name": name,
-                "is_dir": os.path.isdir(fpath),
-                "path": os.path.relpath(fpath, working_dir)
-            })
-        items.sort(key=lambda x: (not x["is_dir"], x["name"]))
-        return jsonify({"items": items, "cwd": working_dir})
-    except Exception as e:
-        return jsonify({"error": str(e)})
+        os.remove(filepath)
+    except OSError:
+        pass
+    return jsonify({"status": "deleted"})
 
-@app.route("/chat", methods=["POST"])
-def chat():
-    global history, working_dir
-    data = request.json
+@app.route("/chats/<chat_id>/messages", methods=["GET"])
+def get_messages(chat_id):
+    """Return the full message history of a chat."""
+    if chat_id not in chats:
+        return jsonify({"error": "Chat not found"}), 404
+    return jsonify(chats[chat_id]["messages"])
+
+@app.route("/chats/<chat_id>/messages", methods=["POST"])
+def send_message(chat_id):
+    """Process a user message and stream the assistant response."""
+    if chat_id not in chats:
+        return jsonify({"error": "Chat not found"}), 404
+
+    data = request.json or {}
     user_msg = data.get("message", "")
-    model = data.get("model", MODEL)
-    cwd_hint = data.get("working_dir", working_dir)
-    history.append({"role": "user", "content": user_msg})
+    model_override = data.get("model")
 
-    if working_dir:
+    chat = chats[chat_id]
+    if model_override:
+        chat["model"] = model_override
+
+    # Append user message
+    chat["messages"].append({"role": "user", "content": user_msg})
+    save_chat(chat_id)
+
+    cwd = chat["working_dir"]
+    if cwd:
         try:
-            top_files = sorted(os.listdir(working_dir))[:30]
+            top_files = sorted(os.listdir(cwd))[:30]
             file_hint = "\n".join(top_files)
         except Exception:
             file_hint = "(unreadable)"
-        system_msg = {"role": "system", "content": f"Working directory: {working_dir}\nTop-level contents:\n{file_hint}\n\nAlways use tools relative to the working directory. Never navigate above it."}
+        system_msg = {"role": "system", "content": f"Working directory: {cwd}\nTop-level contents:\n{file_hint}\n\nAlways use tools relative to the working directory. Never navigate above it."}
     else:
         system_msg = {"role": "system", "content": "No working directory set. Ask user to select a project folder first."}
-    msgs_with_sys = [system_msg] + list(history)
 
     def generate():
-        global history
-        messages = list(msgs_with_sys)
-        full_content = ""
+        messages = [system_msg] + list(chat["messages"])
 
         for _round in range(6):
             payload = {
-                "model": model,
+                "model": chat["model"],
                 "messages": messages,
                 "stream": True,
                 "tools": TOOLS,
@@ -460,7 +498,6 @@ def chat():
                 content_chunk = delta.get("content") or ""
                 if content_chunk:
                     round_content += content_chunk
-                    full_content += content_chunk
                     yield f"data: {json.dumps({'type': 'text', 'text': content_chunk})}\n\n"
 
                 for tc_delta in delta.get("tool_calls", []):
@@ -476,8 +513,14 @@ def chat():
                         tool_calls_acc[idx]["arguments"] += fn["arguments"]
 
             if not tool_calls_acc:
+                # Normal assistant reply, no tool calls
+                if round_content:
+                    messages.append({"role": "assistant", "content": round_content})
+                    chat["messages"].append({"role": "assistant", "content": round_content})
+                    save_chat(chat_id)
                 break
 
+            # Build tool call list and assistant message
             tc_list = []
             for idx in sorted(tool_calls_acc.keys()):
                 tc = tool_calls_acc[idx]
@@ -491,6 +534,7 @@ def chat():
             if round_content:
                 asst_msg["content"] = round_content
             messages.append(asst_msg)
+            chat["messages"].append(asst_msg)
 
             for tc in tc_list:
                 fn_name = tc["function"]["name"]
@@ -500,20 +544,20 @@ def chat():
                     args = {}
 
                 yield f"data: {json.dumps({'type': 'tool_use', 'name': fn_name, 'args': args})}\n\n"
-                result = run_tool(fn_name, args)
+                result = run_tool(fn_name, args, cwd)
                 yield f"data: {json.dumps({'type': 'tool_done', 'name': fn_name})}\n\n"
 
-                messages.append({
+                tool_msg = {
                     "role": "tool",
                     "tool_call_id": tc["id"],
                     "content": result
-                })
+                }
+                messages.append(tool_msg)
+                chat["messages"].append(tool_msg)
 
-        if full_content:
-            history.append({"role": "assistant", "content": full_content})
-            if len(history) > 20:
-                history = history[-20:]
+            save_chat(chat_id)
 
+        # Final assistant message with content only (already handled)
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return Response(
@@ -526,14 +570,17 @@ def chat():
         }
     )
 
-
-@app.route("/clear", methods=["POST"])
-def clear():
-    global history
-    history = []
+@app.route("/chats/<chat_id>/clear", methods=["POST"])
+def clear_chat(chat_id):
+    """Clear all messages of a chat."""
+    if chat_id not in chats:
+        return jsonify({"error": "Chat not found"}), 404
+    chats[chat_id]["messages"] = []
+    save_chat(chat_id)
     return jsonify({"status": "cleared"})
 
-
 if __name__ == "__main__":
+    # Standalone debug run (not used under Chaquopy)
+    init_chats()
     print(f"OpenCode — http://localhost:{PORT}")
     app.run(host=HOST, port=PORT, debug=True)

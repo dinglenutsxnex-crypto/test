@@ -3,7 +3,6 @@ package com.opencode.app;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -24,10 +23,6 @@ import android.widget.Toast;
 import com.chaquo.python.Python;
 import com.chaquo.python.android.AndroidPlatform;
 
-import java.io.File;
-import java.util.ArrayList;
-import java.util.List;
-
 public class MainActivity extends Activity {
 
     private WebView webView;
@@ -37,17 +32,12 @@ public class MainActivity extends Activity {
     private static final int REQUEST_FOLDER_PICKER = 100;
 
     private boolean returningFromSettings = false;
-    private SharedPreferences prefs;
-    private String selectedFolderPath;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-
-        prefs = getSharedPreferences("opencode", MODE_PRIVATE);
-        selectedFolderPath = prefs.getString("working_dir", "");
 
         setupFullscreen();
         requestFileAccess();
@@ -62,7 +52,6 @@ public class MainActivity extends Activity {
     }
 
     // ── Fullscreen ────────────────────────────────────────────────────────────
-
     private void setupFullscreen() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             getWindow().setDecorFitsSystemWindows(false);
@@ -92,7 +81,6 @@ public class MainActivity extends Activity {
     }
 
     // ── File access ───────────────────────────────────────────────────────────
-
     private void requestFileAccess() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
@@ -114,26 +102,26 @@ public class MainActivity extends Activity {
         }
     }
 
-    // When user comes back from the MANAGE_EXTERNAL_STORAGE settings page
     @Override
     protected void onResume() {
         super.onResume();
         if (returningFromSettings) {
             returningFromSettings = false;
-            // 500ms delay wait fix after returning from settings
             new Handler(Looper.getMainLooper()).postDelayed(
                 () -> webView.loadUrl(FLASK_URL), 500);
         }
     }
 
     // ── Flask server ──────────────────────────────────────────────────────────
-
     private void startFlaskServer() {
         Thread t = new Thread(() -> {
             try {
                 if (!Python.isStarted()) {
                     Python.start(new AndroidPlatform(this));
                 }
+                // Pass external storage path to Python
+                String storagePath = Environment.getExternalStorageDirectory().getAbsolutePath();
+                Python.getInstance().getModule("runner").callAttr("set_storage_path", storagePath);
                 Python.getInstance().getModule("runner").callAttr("run");
             } catch (Exception e) {
                 new Handler(Looper.getMainLooper()).post(() ->
@@ -146,7 +134,6 @@ public class MainActivity extends Activity {
     }
 
     // ── WebView ───────────────────────────────────────────────────────────────
-
     @SuppressLint("SetJavaScriptEnabled")
     private void setupWebView() {
         WebSettings s = webView.getSettings();
@@ -163,42 +150,11 @@ public class MainActivity extends Activity {
         });
     }
 
-    // JS Bridge interface
     class AndroidBridge {
-        @JavascriptInterface
-        public String getWorkingDir() {
-            return selectedFolderPath != null ? selectedFolderPath : "";
-        }
-
-        @JavascriptInterface
-        public void setWorkingDir(String path) {
-            selectedFolderPath = path;
-            prefs.edit().putString("working_dir", path).apply();
-        }
-
         @JavascriptInterface
         public void openFolderPicker() {
             Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
             startActivityForResult(intent, REQUEST_FOLDER_PICKER);
-        }
-
-        @JavascriptInterface
-        public String listFiles(String path) {
-            if (path == null || path.isEmpty()) {
-                path = Environment.getExternalStorageDirectory().getAbsolutePath();
-            }
-            File dir = new File(path);
-            if (!dir.exists() || !dir.isDirectory()) {
-                return "[]";
-            }
-            List<String> files = new ArrayList<>();
-            File[] items = dir.listFiles();
-            if (items != null) {
-                for (File f : items) {
-                    files.add(f.getName() + (f.isDirectory() ? "/" : ""));
-                }
-            }
-            return files.toString();
         }
     }
 
@@ -214,23 +170,19 @@ public class MainActivity extends Activity {
         if (requestCode == REQUEST_FOLDER_PICKER && resultCode == RESULT_OK && data != null) {
             Uri treeUri = data.getData();
             if (treeUri == null) return;
-            
-            // 1. Take persistent permission immediately
+
             getContentResolver().takePersistableUriPermission(treeUri,
                 Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
 
-            // 2. Parse SAF URI path to bulletproof absolute POSIX path
             String path = treeUri.getPath();
             String authority = treeUri.getAuthority();
+            String selectedFolderPath = null;
 
             if (path != null) {
                 if ("com.android.providers.downloads.documents".equals(authority)) {
-                    // Handles the case where user explicitly selects "Downloads" provider
                     selectedFolderPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath();
-                } 
-                else if (path.contains(":")) {
-                    // limit to 2 splits so folders with colons in name don't break
-                    String[] split = path.split(":", 2); 
+                } else if (path.contains(":")) {
+                    String[] split = path.split(":", 2);
                     String type = split[0];
                     String relativePath = split.length > 1 ? split[1] : "";
 
@@ -240,7 +192,6 @@ public class MainActivity extends Activity {
                             selectedFolderPath += "/" + relativePath;
                         }
                     } else {
-                        // External SD card
                         String volumeId = type.substring(type.lastIndexOf('/') + 1);
                         selectedFolderPath = "/storage/" + volumeId;
                         if (!relativePath.isEmpty()) {
@@ -252,20 +203,19 @@ public class MainActivity extends Activity {
                 }
             }
 
-            prefs.edit().putString("working_dir", selectedFolderPath).apply();
-
-            final String finalPath = selectedFolderPath;
-            new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                if (webView != null) {
-                    String escaped = finalPath.replace("\\", "\\\\").replace("'", "\\'");
-                    webView.evaluateJavascript("setWorkingDir('" + escaped + "')", null);
-                }
-            }, 500);
+            if (selectedFolderPath != null) {
+                final String finalPath = selectedFolderPath;
+                new Handler(Looper.getMainLooper()).post(() -> {
+                    if (webView != null) {
+                        String escaped = finalPath.replace("\\", "\\\\").replace("'", "\\'");
+                        webView.evaluateJavascript("onFolderSelected('" + escaped + "')", null);
+                    }
+                });
+            }
         }
     }
 
     // ── Loading screen ────────────────────────────────────────────────────────
-
     private static final String LOADING_HTML =
         "<!DOCTYPE html><html><head>" +
         "<meta name='viewport' content='width=device-width, initial-scale=1'>" +
