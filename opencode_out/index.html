@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenCode</title>
+    <link rel="stylesheet" href="ui/style.css">
+</head>
+<body>
+    <div id="sidebar">
+        <div class="sidebar-header">
+            <button id="folder-btn" class="folder-btn">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+                <span>Open Folder</span>
+            </button>
+        </div>
+        <div id="folder-path" class="folder-path"></div>
+        <div id="file-tree" class="file-tree"></div>
+    </div>
+
+    <div id="main">
+        <div id="header">
+            <button id="menu-btn" class="menu-btn">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>
+            <div class="header-left">
+                <span class="header-title">opencode</span>
+                <span class="header-sep">·</span>
+                <div class="model-selector">
+                    <button id="model-btn" class="model-badge">
+                        <span id="model-label">minimax-m2.5</span>
+                        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <div id="model-dropdown" class="model-dropdown hidden">
+                        <div class="model-dropdown-label">Free models</div>
+                        <button class="model-option active" data-model="minimax-m2.5-free" data-label="minimax-m2.5">minimax-m2.5</button>
+                        <button class="model-option" data-model="kimi-k2.5-free" data-label="kimi-k2.5">kimi-k2.5</button>
+                        <button class="model-option" data-model="glm-4.7-free" data-label="glm-4.7">glm-4.7</button>
+                        <button class="model-option" data-model="big-pickle" data-label="big-pickle">big-pickle</button>
+                        <button class="model-option" data-model="gpt-5-nano" data-label="gpt-5-nano">gpt-5-nano</button>
+                        <button class="model-option" data-model="mimo-v2-pro-free" data-label="mimo-v2-pro">mimo-v2-pro</button>
+                        <button class="model-option" data-model="nemotron-3-super-free" data-label="nemotron-3-super">nemotron-3-super</button>
+                    </div>
+                </div>
+            </div>
+            <button id="clear">new chat</button>
+        </div>
+
+        <div id="chat"></div>
+
+        <div id="input-area">
+            <span class="input-prefix">&gt;</span>
+            <textarea id="input" placeholder="send a message..." rows="1"></textarea>
+            <button id="send"></button>
+        </div>
+    </div>
+
+    <script src="ui/app.js"></script>
+</body>
+</html>
