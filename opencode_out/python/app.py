@@ -1,57 +1,86 @@
 import os
 import json
 import re
-import uuid
 import glob as glob_module
 import fnmatch
 import requests
+import uuid
+import time
 from flask import Flask, send_file, request, jsonify, send_from_directory, Response, stream_with_context
-from python.config import API_URL, MODEL, HOST, PORT, STORAGE_PATH
+
+# Dynamic config loading
+try:
+    from python.config import API_URL, MODEL, HOST, PORT
+except ImportError:
+    from config import API_URL, MODEL, HOST, PORT
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 app = Flask(__name__, template_folder=ROOT, static_folder=ROOT + '/ui')
 
-# In‑memory chats dict: id -> { id, title, working_dir, model, messages }
-chats = {}
+# Storage paths
+STORAGE_DIR = "/storage/emulated/0/opencode"
+CHATS_FILE = os.path.join(STORAGE_DIR, "chats.json")
 
-# ── Initialisation ──────────────────────────────────────────────────
-def init_chats():
-    global chats
-    if not STORAGE_PATH:
-        return
-    opencode_dir = os.path.join(STORAGE_PATH, "opencode")
-    os.makedirs(opencode_dir, exist_ok=True)
-    for filename in os.listdir(opencode_dir):
-        if filename.endswith('.json'):
-            try:
-                with open(os.path.join(opencode_dir, filename), 'r') as f:
-                    chat = json.load(f)
-                    chats[chat['id']] = chat
-            except Exception:
-                pass
+def ensure_storage():
+    """Create storage directory if it doesn't exist"""
+    os.makedirs(STORAGE_DIR, exist_ok=True)
+    if not os.path.exists(CHATS_FILE):
+        with open(CHATS_FILE, 'w') as f:
+            json.dump({"chats": {}, "active_chat_id": None}, f)
 
-def save_chat(chat_id):
-    """Persist a single chat to its JSON file."""
-    opencode_dir = os.path.join(STORAGE_PATH, "opencode")
-    filepath = os.path.join(opencode_dir, f"{chat_id}.json")
-    with open(filepath, 'w') as f:
-        json.dump(chats[chat_id], f, indent=2)
+def load_chats_index():
+    """Load the chat index"""
+    ensure_storage()
+    with open(CHATS_FILE, 'r') as f:
+        return json.load(f)
 
-# ── Path helpers ────────────────────────────────────────────────────
-def resolve_path(path, cwd):
-    if not cwd:
+def save_chats_index(data):
+    """Save the chat index"""
+    ensure_storage()
+    with open(CHATS_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
+
+def load_chat(chat_id):
+    """Load a specific chat's history"""
+    chat_file = os.path.join(STORAGE_DIR, f"chat_{chat_id}.json")
+    if os.path.exists(chat_file):
+        with open(chat_file, 'r') as f:
+            return json.load(f)
+    return {"history": [], "folders": [], "title": "New Chat"}
+
+def save_chat(chat_id, data):
+    """Save a specific chat's history"""
+    chat_file = os.path.join(STORAGE_DIR, f"chat_{chat_id}.json")
+    with open(chat_file, 'w') as f:
+        json.dump(data, f, indent=2)
+
+# In-memory state
+active_chat_id = None
+working_dirs = []  # Multiple working directories
+
+def resolve_path(path, cwd=None):
+    """Resolve a path relative to the first working directory"""
+    if not working_dirs:
         return None
-    path = path.strip()
-    if os.path.isabs(path):
+    
+    if cwd and os.path.isabs(path):
         return path
-    return os.path.normpath(os.path.join(cwd, path))
+    
+    # Try each working directory
+    for wd in working_dirs:
+        full = os.path.normpath(os.path.join(wd, path.strip()))
+        if os.path.exists(full):
+            return full
+    
+    # Default to first working directory
+    return os.path.normpath(os.path.join(working_dirs[0], path.strip()))
 
-def is_within_dir(path, dir_path):
+def is_within_dirs(path):
+    """Check if path is within any working directory"""
     abs_path = os.path.abspath(path)
-    abs_dir = os.path.abspath(dir_path)
-    return abs_path.startswith(abs_dir + os.sep) or abs_path == abs_dir
+    return any(abs_path.startswith(os.path.abspath(d) + os.sep) or abs_path == os.path.abspath(d) 
+              for d in working_dirs)
 
-# ── Tools ───────────────────────────────────────────────────────────
 TOOLS = [
     {
         "type": "function",
@@ -86,12 +115,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "glob",
-            "description": "Find files matching a pattern in the working directory.",
+            "description": "Find files matching a pattern in the working directories.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string", "description": "Glob pattern (e.g., **/*.js)"},
-                    "path": {"type": "string", "description": "Base directory (defaults to working directory)"}
+                    "directory_index": {"type": "integer", "description": "Index of the directory to search (0-based, default searches all)"}
                 },
                 "required": ["pattern"]
             }
@@ -106,7 +135,7 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string", "description": "Regex pattern to search for"},
-                    "path": {"type": "string", "description": "Directory or file to search (defaults to working directory)"},
+                    "directory_index": {"type": "integer", "description": "Index of the directory to search (0-based, default searches all)"},
                     "include": {"type": "string", "description": "File pattern to include (*.js, *.py, etc.)"}
                 },
                 "required": ["pattern"]
@@ -121,7 +150,7 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "filePath": {"type": "string", "description": "Path to the file (relative to working directory)"},
+                    "filePath": {"type": "string", "description": "Path to the file (relative or absolute)"},
                     "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed)"},
                     "limit": {"type": "integer", "description": "Maximum number of lines to read"}
                 },
@@ -138,7 +167,7 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "content": {"type": "string", "description": "Content to write to the file"},
-                    "filePath": {"type": "string", "description": "Path to the file (relative to working directory)"}
+                    "filePath": {"type": "string", "description": "Path to the file (relative or absolute)"}
                 },
                 "required": ["content", "filePath"]
             }
@@ -152,7 +181,7 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "filePath": {"type": "string", "description": "Path to the file (relative to working directory)"},
+                    "filePath": {"type": "string", "description": "Path to the file (relative or absolute)"},
                     "oldString": {"type": "string", "description": "Text to find and replace"},
                     "newString": {"type": "string", "description": "Text to replace it with"},
                     "replaceAll": {"type": "boolean", "description": "Replace all occurrences (default false)", "default": False}
@@ -216,66 +245,90 @@ def webfetch(url):
     except Exception as e:
         return f"Fetch error: {e}"
 
-def tool_glob(pattern, path, cwd):
-    if not cwd:
-        return "No working directory set."
-    base = resolve_path(path, cwd) if path else cwd
-    if not is_within_dir(base, cwd):
-        return f"Error: Path '{path}' is outside working directory"
-    try:
-        full_pattern = os.path.join(base, pattern)
-        matches = glob_module.glob(full_pattern, recursive=True)
-        matches = [m for m in matches if is_within_dir(m, cwd)]
-        if not matches:
-            return f"No files matching '{pattern}'"
-        rel_matches = [os.path.relpath(m, base) for m in matches[:100]]
-        return "Found files:\n" + "\n".join(rel_matches)
-    except Exception as e:
-        return f"Glob error: {e}"
+def tool_glob(pattern, directory_index=None):
+    global working_dirs
+    if not working_dirs:
+        return "No working directories set. Use Open Folder to add one."
+    
+    dirs_to_search = [working_dirs[directory_index]] if directory_index is not None and 0 <= directory_index < len(working_dirs) else working_dirs
+    all_matches = []
+    
+    for base in dirs_to_search:
+        try:
+            full_pattern = os.path.join(base, pattern)
+            matches = glob_module.glob(full_pattern, recursive=True)
+            matches = [m for m in matches if is_within_dirs(m)]
+            all_matches.extend(matches)
+        except Exception as e:
+            continue
+    
+    if not all_matches:
+        return f"No files matching '{pattern}'"
+    
+    all_matches = all_matches[:100]
+    results = []
+    for m in all_matches:
+        # Find which dir it's relative to
+        for base in dirs_to_search:
+            if m.startswith(base):
+                rel = os.path.relpath(m, base)
+                if len(dirs_to_search) > 1:
+                    rel = f"[{os.path.basename(base)}] {rel}"
+                results.append(rel)
+                break
+    
+    return "Found files:\n" + "\n".join(results)
 
-def tool_grep(pattern, path, include, cwd):
-    if not cwd:
-        return "No working directory set."
-    base = resolve_path(path, cwd) if path else cwd
-    if not is_within_dir(base, cwd):
-        return f"Error: Path '{path}' is outside working directory"
+def tool_grep(pattern, directory_index=None, include=None):
+    global working_dirs
+    if not working_dirs:
+        return "No working directories set."
+    
     try:
         regex = re.compile(pattern)
     except re.error as e:
         return f"Invalid regex: {e}"
+    
+    dirs_to_search = [working_dirs[directory_index]] if directory_index is not None and 0 <= directory_index < len(working_dirs) else working_dirs
     results = []
-    try:
-        for root, dirs, files in os.walk(base):
-            if not is_within_dir(root, cwd):
-                continue
-            for name in files:
-                if include and not fnmatch.fnmatch(name, include):
+    
+    for base in dirs_to_search:
+        try:
+            for root, dirs, files in os.walk(base):
+                if not is_within_dirs(root):
                     continue
-                fpath = os.path.join(root, name)
-                try:
-                    with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
-                        for i, line in enumerate(f, 1):
-                            if regex.search(line):
-                                rel = os.path.relpath(fpath, base)
-                                results.append(f"{rel}:{i}: {line.rstrip()}")
-                                if len(results) >= 100:
-                                    break
-                except Exception:
-                    pass
-            if len(results) >= 100:
-                break
-    except Exception as e:
-        return f"Grep error: {e}"
+                for name in files:
+                    if include and not fnmatch.fnmatch(name, include):
+                        continue
+                    fpath = os.path.join(root, name)
+                    try:
+                        with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+                            for i, line in enumerate(f, 1):
+                                if regex.search(line):
+                                    rel = os.path.relpath(fpath, base)
+                                    if len(dirs_to_search) > 1:
+                                        rel = f"[{os.path.basename(base)}] {rel}"
+                                    results.append(f"{rel}:{i}: {line.rstrip()}")
+                                    if len(results) >= 100:
+                                        break
+                    except Exception:
+                        pass
+                if len(results) >= 100:
+                    break
+        except Exception:
+            continue
+    
     if not results:
         return f"No matches for '{pattern}'"
     return "Matches:\n" + "\n".join(results[:100])
 
-def tool_read(filePath, offset, limit, cwd):
-    if not cwd:
-        return "No working directory set."
-    full_path = resolve_path(filePath, cwd)
-    if not full_path or not is_within_dir(full_path, cwd):
-        return f"Error: Path '{filePath}' is outside working directory"
+def tool_read(filePath, offset=None, limit=None):
+    global working_dirs
+    full_path = resolve_path(filePath)
+    if not full_path:
+        return f"Error: Could not resolve path '{filePath}'"
+    if not is_within_dirs(full_path):
+        return f"Error: Path '{filePath}' is outside working directories"
     if not os.path.isfile(full_path):
         return f"Error: File not found: {filePath}"
     try:
@@ -284,7 +337,6 @@ def tool_read(filePath, offset, limit, cwd):
         start = (offset - 1) if offset else 0
         end = len(lines) if limit is None else start + limit
         lines = lines[start:end]
-        total = len(lines)
         content = "".join(lines)
         prefix = f"Lines {start+1}-{end}:\n" if offset or limit else ""
         if len(content) > 50000:
@@ -293,12 +345,13 @@ def tool_read(filePath, offset, limit, cwd):
     except Exception as e:
         return f"Read error: {e}"
 
-def tool_write(content, filePath, cwd):
-    if not cwd:
-        return "No working directory set."
-    full_path = resolve_path(filePath, cwd)
-    if not full_path or not is_within_dir(full_path, cwd):
-        return f"Error: Path '{filePath}' is outside working directory"
+def tool_write(content, filePath):
+    global working_dirs
+    full_path = resolve_path(filePath)
+    if not full_path:
+        return f"Error: Could not resolve path '{filePath}'"
+    if not is_within_dirs(full_path):
+        return f"Error: Path '{filePath}' is outside working directories"
     try:
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         with open(full_path, 'w', encoding='utf-8') as f:
@@ -307,12 +360,13 @@ def tool_write(content, filePath, cwd):
     except Exception as e:
         return f"Write error: {e}"
 
-def tool_edit(filePath, oldString, newString, replaceAll, cwd):
-    if not cwd:
-        return "No working directory set."
-    full_path = resolve_path(filePath, cwd)
-    if not full_path or not is_within_dir(full_path, cwd):
-        return f"Error: Path '{filePath}' is outside working directory"
+def tool_edit(filePath, oldString, newString, replaceAll=False):
+    global working_dirs
+    full_path = resolve_path(filePath)
+    if not full_path:
+        return f"Error: Could not resolve path '{filePath}'"
+    if not is_within_dirs(full_path):
+        return f"Error: Path '{filePath}' is outside working directories"
     if not os.path.isfile(full_path):
         return f"Error: File not found: {filePath}"
     try:
@@ -332,24 +386,23 @@ def tool_edit(filePath, oldString, newString, replaceAll, cwd):
     except Exception as e:
         return f"Edit error: {e}"
 
-def run_tool(name, args, cwd):
+def run_tool(name, args):
     if name == "web_search":
         return websearch(args.get("query", ""), args.get("num_results", 8))
     elif name == "web_fetch":
         return webfetch(args.get("url", ""))
     elif name == "glob":
-        return tool_glob(args.get("pattern", "*"), args.get("path"), cwd)
+        return tool_glob(args.get("pattern", "*"), args.get("directory_index"))
     elif name == "grep":
-        return tool_grep(args.get("pattern", ""), args.get("path"), args.get("include"), cwd)
+        return tool_grep(args.get("pattern", ""), args.get("directory_index"), args.get("include"))
     elif name == "read":
-        return tool_read(args.get("filePath", ""), args.get("offset"), args.get("limit"), cwd)
+        return tool_read(args.get("filePath", ""), args.get("offset"), args.get("limit"))
     elif name == "write":
-        return tool_write(args.get("content", ""), args.get("filePath", ""), cwd)
+        return tool_write(args.get("content", ""), args.get("filePath", ""))
     elif name == "edit":
-        return tool_edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), args.get("replaceAll", False), cwd)
+        return tool_edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), args.get("replaceAll", False))
     return f"Unknown tool: {name}"
 
-# ── Routes ──────────────────────────────────────────────────────────
 @app.route("/")
 def home():
     return send_file(os.path.join(ROOT, "index.html"))
@@ -358,122 +411,210 @@ def home():
 def static_files(filename):
     return send_from_directory(ROOT + '/ui', filename)
 
-# ── Chat management ─────────────────────────────────────────────────
-@app.route("/chats", methods=["GET"])
-def list_chats():
-    """Return all chats with summary info (no full messages)."""
-    chat_list = []
-    for c in chats.values():
-        chat_list.append({
-            "id": c["id"],
-            "title": c["title"],
-            "working_dir": c["working_dir"],
-            "model": c["model"]
-        })
-    return jsonify(chat_list)
+@app.route("/api/chats", methods=["GET"])
+def get_chats():
+    data = load_chats_index()
+    return jsonify(data)
 
-@app.route("/chats", methods=["POST"])
+@app.route("/api/chats", methods=["POST"])
 def create_chat():
-    """Create a brand‑new chat and return it."""
-    chat_id = str(uuid.uuid4())
-    chat = {
+    data = load_chats_index()
+    chat_id = str(uuid.uuid4())[:8]
+    title = request.json.get("title", "New Chat")
+    
+    chat_data = {
         "id": chat_id,
-        "title": "New Chat",
-        "working_dir": "",
-        "model": MODEL,
-        "messages": []
+        "title": title,
+        "history": [],
+        "folders": [],
+        "created_at": time.time()
     }
-    chats[chat_id] = chat
-    save_chat(chat_id)
-    return jsonify(chat)
+    
+    data["chats"][chat_id] = {
+        "id": chat_id,
+        "title": title,
+        "created_at": chat_data["created_at"]
+    }
+    data["active_chat_id"] = chat_id
+    save_chats_index(data)
+    save_chat(chat_id, chat_data)
+    
+    global active_chat_id
+    active_chat_id = chat_id
+    
+    return jsonify(data)
 
-@app.route("/chats/<chat_id>", methods=["PUT"])
+@app.route("/api/chats/<chat_id>", methods=["PUT"])
 def update_chat(chat_id):
-    """Update title, working_dir and/or model."""
-    if chat_id not in chats:
+    data = load_chats_index()
+    if chat_id not in data["chats"]:
         return jsonify({"error": "Chat not found"}), 404
-    data = request.json or {}
-    if "title" in data:
-        chats[chat_id]["title"] = data["title"]
-    if "working_dir" in data:
-        chats[chat_id]["working_dir"] = data["working_dir"]
-    if "model" in data:
-        chats[chat_id]["model"] = data["model"]
-    save_chat(chat_id)
-    return jsonify(chats[chat_id])
+    
+    updates = request.json
+    if "title" in updates:
+        data["chats"][chat_id]["title"] = updates["title"]
+    if "active" in updates:
+        data["active_chat_id"] = chat_id
+        global active_chat_id
+        active_chat_id = chat_id
+    
+    save_chats_index(data)
+    return jsonify(data)
 
-@app.route("/chats/<chat_id>", methods=["DELETE"])
+@app.route("/api/chats/<chat_id>", methods=["DELETE"])
 def delete_chat(chat_id):
-    """Remove a chat and its file."""
-    if chat_id not in chats:
+    data = load_chats_index()
+    if chat_id not in data["chats"]:
         return jsonify({"error": "Chat not found"}), 404
-    del chats[chat_id]
-    opencode_dir = os.path.join(STORAGE_PATH, "opencode")
-    filepath = os.path.join(opencode_dir, f"{chat_id}.json")
+    
+    del data["chats"][chat_id]
+    
+    # Delete chat file
+    chat_file = os.path.join(STORAGE_DIR, f"chat_{chat_id}.json")
+    if os.path.exists(chat_file):
+        os.remove(chat_file)
+    
+    # Set a new active chat if needed
+    if data["active_chat_id"] == chat_id:
+        if data["chats"]:
+            data["active_chat_id"] = list(data["chats"].keys())[0]
+        else:
+            data["active_chat_id"] = None
+            global active_chat_id
+            active_chat_id = None
+    
+    save_chats_index(data)
+    return jsonify(data)
+
+@app.route("/api/chats/<chat_id>/history", methods=["GET"])
+def get_chat_history(chat_id):
+    chat_data = load_chat(chat_id)
+    return jsonify(chat_data)
+
+@app.route("/api/folders", methods=["GET"])
+def get_folders():
+    global working_dirs
+    return jsonify({"folders": working_dirs})
+
+@app.route("/api/folders", methods=["POST"])
+def add_folder():
+    global working_dirs
+    folder = request.json.get("folder", "").strip()
+    if folder and os.path.isdir(folder) and folder not in working_dirs:
+        working_dirs.append(folder)
+        # Save to active chat
+        if active_chat_id:
+            chat_data = load_chat(active_chat_id)
+            chat_data["folders"] = working_dirs
+            save_chat(active_chat_id, chat_data)
+    return jsonify({"folders": working_dirs})
+
+@app.route("/api/folders/<int:index>", methods=["DELETE"])
+def remove_folder(index):
+    global working_dirs
+    if 0 <= index < len(working_dirs):
+        working_dirs.pop(index)
+        if active_chat_id:
+            chat_data = load_chat(active_chat_id)
+            chat_data["folders"] = working_dirs
+            save_chat(active_chat_id, chat_data)
+    return jsonify({"folders": working_dirs})
+
+@app.route("/ls", methods=["GET"])
+def list_dir():
+    global working_dirs
+    path = request.args.get("path", "")
+    
+    if not working_dirs:
+        return jsonify({"error": "No working directories set"})
+    
+    # If path is empty, list all working directories
+    if not path:
+        items = []
+        for i, wd in enumerate(working_dirs):
+            items.append({
+                "name": f"[Folder {i}] {os.path.basename(wd)}",
+                "is_dir": True,
+                "path": wd,
+                "folder_index": i
+            })
+        return jsonify({"items": items, "folders": working_dirs})
+    
+    # Otherwise list specific directory
+    full_path = resolve_path(path)
+    if not full_path or not is_within_dirs(full_path):
+        return jsonify({"error": "Path outside working directories"})
+    if not os.path.isdir(full_path):
+        return jsonify({"error": f"Not a directory: {path}"})
+    
     try:
-        os.remove(filepath)
-    except OSError:
-        pass
-    return jsonify({"status": "deleted"})
+        items = []
+        for name in sorted(os.listdir(full_path)):
+            fpath = os.path.join(full_path, name)
+            items.append({
+                "name": name,
+                "is_dir": os.path.isdir(fpath),
+                "path": fpath
+            })
+        return jsonify({"items": items, "cwd": full_path})
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
-@app.route("/chats/<chat_id>/messages", methods=["GET"])
-def get_messages(chat_id):
-    """Return the full message history of a chat."""
-    if chat_id not in chats:
-        return jsonify({"error": "Chat not found"}), 404
-    return jsonify(chats[chat_id]["messages"])
-
-@app.route("/chats/<chat_id>/messages", methods=["POST"])
-def send_message(chat_id):
-    """Process a user message and stream the assistant response."""
-    if chat_id not in chats:
-        return jsonify({"error": "Chat not found"}), 404
-
-    data = request.json or {}
+@app.route("/chat", methods=["POST"])
+def chat():
+    global active_chat_id, working_dirs
+    data = request.json
     user_msg = data.get("message", "")
-    model_override = data.get("model")
-
-    chat = chats[chat_id]
-    if model_override:
-        chat["model"] = model_override
-
-    # Append user message
-    chat["messages"].append({"role": "user", "content": user_msg})
-    save_chat(chat_id)
-
-    cwd = chat["working_dir"]
-    if cwd:
-        try:
-            top_files = sorted(os.listdir(cwd))[:30]
-            file_hint = "\n".join(top_files)
-        except Exception:
-            file_hint = "(unreadable)"
-        system_msg = {"role": "system", "content": f"Working directory: {cwd}\nTop-level contents:\n{file_hint}\n\nAlways use tools relative to the working directory. Never navigate above it."}
+    model = data.get("model", MODEL)
+    chat_id = data.get("chat_id", active_chat_id)
+    
+    if not chat_id:
+        return jsonify({"error": "No active chat"}), 400
+    
+    # Load chat history
+    chat_data = load_chat(chat_id)
+    history = chat_data.get("history", [])
+    working_dirs = chat_data.get("folders", [])
+    
+    history.append({"role": "user", "content": user_msg})
+    
+    if working_dirs:
+        dir_list = "\n".join(f"[{i}] {d}" for i, d in enumerate(working_dirs))
+        system_msg = {
+            "role": "system", 
+            "content": f"Working directories:\n{dir_list}\n\nYou can access files from any of these directories. Use paths relative to one of them."
+        }
     else:
-        system_msg = {"role": "system", "content": "No working directory set. Ask user to select a project folder first."}
-
+        system_msg = {
+            "role": "system", 
+            "content": "No working directories set. Ask the user to add project folders."
+        }
+    
+    msgs_with_sys = [system_msg] + list(history)
+    
     def generate():
-        messages = [system_msg] + list(chat["messages"])
-
+        messages = list(msgs_with_sys)
+        full_content = ""
+        
         for _round in range(6):
             payload = {
-                "model": chat["model"],
+                "model": model,
                 "messages": messages,
                 "stream": True,
                 "tools": TOOLS,
                 "tool_choice": "auto"
             }
-
+            
             try:
                 api_resp = requests.post(API_URL, json=payload, stream=True, timeout=180)
                 api_resp.raise_for_status()
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
                 return
-
+            
             tool_calls_acc = {}
             round_content = ""
-
+            
             for raw in api_resp.iter_lines():
                 if not raw:
                     continue
@@ -487,19 +628,20 @@ def send_message(chat_id):
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
-
+                
                 choice = (chunk.get("choices") or [{}])[0]
                 delta = choice.get("delta", {})
-
+                
                 thinking_chunk = delta.get("reasoning") or delta.get("thinking") or ""
                 if thinking_chunk:
                     yield f"data: {json.dumps({'type': 'thinking', 'text': thinking_chunk})}\n\n"
-
+                
                 content_chunk = delta.get("content") or ""
                 if content_chunk:
                     round_content += content_chunk
+                    full_content += content_chunk
                     yield f"data: {json.dumps({'type': 'text', 'text': content_chunk})}\n\n"
-
+                
                 for tc_delta in delta.get("tool_calls", []):
                     idx = tc_delta.get("index", 0)
                     if idx not in tool_calls_acc:
@@ -511,16 +653,10 @@ def send_message(chat_id):
                         tool_calls_acc[idx]["name"] += fn["name"]
                     if fn.get("arguments"):
                         tool_calls_acc[idx]["arguments"] += fn["arguments"]
-
+            
             if not tool_calls_acc:
-                # Normal assistant reply, no tool calls
-                if round_content:
-                    messages.append({"role": "assistant", "content": round_content})
-                    chat["messages"].append({"role": "assistant", "content": round_content})
-                    save_chat(chat_id)
                 break
-
-            # Build tool call list and assistant message
+            
             tc_list = []
             for idx in sorted(tool_calls_acc.keys()):
                 tc = tool_calls_acc[idx]
@@ -529,37 +665,52 @@ def send_message(chat_id):
                     "type": "function",
                     "function": {"name": tc["name"], "arguments": tc["arguments"]}
                 })
-
+            
             asst_msg = {"role": "assistant", "tool_calls": tc_list}
             if round_content:
                 asst_msg["content"] = round_content
             messages.append(asst_msg)
-            chat["messages"].append(asst_msg)
-
+            
             for tc in tc_list:
                 fn_name = tc["function"]["name"]
                 try:
                     args = json.loads(tc["function"]["arguments"])
                 except json.JSONDecodeError:
                     args = {}
-
+                
                 yield f"data: {json.dumps({'type': 'tool_use', 'name': fn_name, 'args': args})}\n\n"
-                result = run_tool(fn_name, args, cwd)
+                result = run_tool(fn_name, args)
                 yield f"data: {json.dumps({'type': 'tool_done', 'name': fn_name})}\n\n"
-
-                tool_msg = {
+                
+                messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
                     "content": result
-                }
-                messages.append(tool_msg)
-                chat["messages"].append(tool_msg)
-
-            save_chat(chat_id)
-
-        # Final assistant message with content only (already handled)
+                })
+        
+        if full_content:
+            history.append({"role": "assistant", "content": full_content})
+            if len(history) > 50:
+                history = history[-50:]
+            
+            # Save chat
+            chat_data["history"] = history
+            chat_data["folders"] = working_dirs
+            
+            # Auto-generate title from first message if still default
+            chats_index = load_chats_index()
+            if chat_id in chats_index["chats"] and chats_index["chats"][chat_id]["title"] == "New Chat":
+                # Generate title from first user message
+                first_user_msg = next((m["content"] for m in history if m["role"] == "user"), "")
+                title = first_user_msg[:40] + ("..." if len(first_user_msg) > 40 else "")
+                chat_data["title"] = title
+                chats_index["chats"][chat_id]["title"] = title
+                save_chats_index(chats_index)
+            
+            save_chat(chat_id, chat_data)
+        
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
+    
     return Response(
         stream_with_context(generate()),
         content_type="text/event-stream",
@@ -570,17 +721,15 @@ def send_message(chat_id):
         }
     )
 
-@app.route("/chats/<chat_id>/clear", methods=["POST"])
-def clear_chat(chat_id):
-    """Clear all messages of a chat."""
-    if chat_id not in chats:
-        return jsonify({"error": "Chat not found"}), 404
-    chats[chat_id]["messages"] = []
-    save_chat(chat_id)
+@app.route("/clear", methods=["POST"])
+def clear():
+    global active_chat_id
+    if active_chat_id:
+        chat_data = load_chat(active_chat_id)
+        chat_data["history"] = []
+        save_chat(active_chat_id, chat_data)
     return jsonify({"status": "cleared"})
 
 if __name__ == "__main__":
-    # Standalone debug run (not used under Chaquopy)
-    init_chats()
     print(f"OpenCode — http://localhost:{PORT}")
     app.run(host=HOST, port=PORT, debug=True)
