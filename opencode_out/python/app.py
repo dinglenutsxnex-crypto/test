@@ -350,26 +350,20 @@ def tool_write(content, filePath):
         return f"Write error: {e}"
 
 
-# Injected by Java via PyObject.put() before Flask starts.
-BUSYBOX_PATH = ""
-
-
 def _find_busybox():
-    """Return busybox path — tries every known method in order."""
-    import glob as _glob
-
-    # 1. Direct injection by Java via appModule.put("BUSYBOX_PATH", path)
-    if BUSYBOX_PATH and os.path.isfile(BUSYBOX_PATH):
-        return BUSYBOX_PATH
-
-    # 2. Broad recursive glob — finds libexec.so anywhere under /data/app/
-    #    Works on all Android versions regardless of hash dir names
-    for entry in _glob.glob("/data/app/*/lib/arm64/libexec.so"):
-        if os.path.isfile(entry):
-            return entry
-    for entry in _glob.glob("/data/app/*/*/lib/arm64/libexec.so"):
-        if os.path.isfile(entry):
-            return entry
+    """Find libexec.so (busybox) using Chaquopy android API — no guessing needed."""
+    # Use Chaquopy's built-in android module to ask Android directly
+    # for the native library directory. This is always correct.
+    try:
+        from android.content import Context
+        from android import activity
+        ctx = activity.getApplicationContext()
+        native_lib_dir = ctx.getApplicationInfo().nativeLibraryDir
+        candidate = os.path.join(native_lib_dir, "libexec.so")
+        if os.path.isfile(candidate):
+            return candidate
+    except Exception as e:
+        pass
 
     return None
 
@@ -382,9 +376,7 @@ def tool_exec_busybox(command, cwd=None):
 
     if not busybox_path:
         return (
-            "BusyBox binary not found. "
-            "libexec.so must be in jniLibs/arm64-v8a/ and the app must be reinstalled. "
-            f"BUSYBOX_PATH='{BUSYBOX_PATH}'"
+            "BusyBox not found. Visit http://localhost:5000/debug_busybox for diagnostics."
         )
 
     if not os.access(busybox_path, os.X_OK):
@@ -773,15 +765,33 @@ def exec_busybox_route():
 @app.route("/debug_busybox", methods=["GET"])
 def debug_busybox():
     """Diagnostic endpoint — shows busybox discovery state."""
-    import glob as _glob
-    info = {
-        "BUSYBOX_PATH_var": BUSYBOX_PATH,
-        "BUSYBOX_PATH_exists": os.path.isfile(BUSYBOX_PATH) if BUSYBOX_PATH else False,
-        "found_by_finder": _find_busybox(),
-        "glob_data_app_1": _glob.glob("/data/app/*/lib/arm64/libexec.so"),
-        "glob_data_app_2": _glob.glob("/data/app/*/*/lib/arm64/libexec.so"),
-        "data_app_ls": os.listdir("/data/app") if os.path.isdir("/data/app") else "cant_list",
-    }
+    info = {}
+    # Try to get native lib dir from Android
+    try:
+        from android.content import Context
+        from android import activity
+        ctx = activity.getApplicationContext()
+        native_lib_dir = ctx.getApplicationInfo().nativeLibraryDir
+        info["native_lib_dir"] = native_lib_dir
+        candidate = os.path.join(native_lib_dir, "libexec.so")
+        info["libexec_path"] = candidate
+        info["libexec_exists"] = os.path.isfile(candidate)
+        if os.path.isfile(candidate):
+            info["libexec_size"] = os.path.getsize(candidate)
+            info["libexec_executable"] = os.access(candidate, os.X_OK)
+    except Exception as e:
+        info["android_api_error"] = str(e)
+
+    info["finder_result"] = _find_busybox()
+
+    # List native lib dir contents safely
+    try:
+        nld = info.get("native_lib_dir", "")
+        if nld and os.path.isdir(nld):
+            info["native_lib_dir_contents"] = os.listdir(nld)
+    except Exception as e:
+        info["native_lib_dir_ls_error"] = str(e)
+
     return jsonify(info)
 
 if __name__ == "__main__":

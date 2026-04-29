@@ -186,12 +186,6 @@ public class MainActivity extends Activity {
                 if (!Python.isStarted()) {
                     Python.start(new AndroidPlatform(this));
                 }
-                // Inject busybox path directly into the Python module
-                // via Chaquopy's PyObject.put() — simplest reliable method.
-                com.chaquo.python.PyObject appModule =
-                    Python.getInstance().getModule("python.app");
-                appModule.put("BUSYBOX_PATH", busyboxPath != null ? busyboxPath : "");
-
                 Python.getInstance().getModule("runner").callAttr("run");
             } catch (Exception e) {
                 new Handler(Looper.getMainLooper()).post(() ->
