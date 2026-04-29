@@ -407,12 +407,21 @@ def tool_exec_busybox(command, cwd=None):
         safe_cwd = "/data/local/tmp"
 
     try:
+        bb = busybox_path
+        bb_env = {**os.environ, "PATH": os.path.dirname(bb) + ":/system/bin:/system/xbin"}
+        # busybox dispatches applets via argv0, so "ls" only works if the binary IS named ls.
+        # Since it's named libexec.so, we must invoke it as: busybox <applet> <args>
+        # We rewrite the shell command so every token is prefixed — simplest: run via
+        # `busybox sh` but with a BUSYBOX env var and a wrapper that aliases common cmds.
+        alias_block = f"alias ls=\'{bb} ls\' grep=\'{bb} grep\' cat=\'{bb} cat\' find=\'{bb} find\' cp=\'{bb} cp\' mv=\'{bb} mv\' rm=\'{bb} rm\' mkdir=\'{bb} mkdir\' chmod=\'{bb} chmod\' echo=\'{bb} echo\' sed=\'{bb} sed\' awk=\'{bb} awk\' head=\'{bb} head\' tail=\'{bb} tail\' wc=\'{bb} wc\' ps=\'{bb} ps\' df=\'{bb} df\' du=\'{bb} du\' tar=\'{bb} tar\' wget=\'{bb} wget\' curl=\'{bb} curl\' kill=\'{bb} kill\' date=\'{bb} date\' pwd=\'{bb} pwd\' env=\'{bb} env\' touch=\'{bb} touch\' stat=\'{bb} stat\' sort=\'{bb} sort\' uniq=\'{bb} uniq\' cut=\'{bb} cut\' tr=\'{bb} tr\';"
+        full_cmd = alias_block + " " + command
         result = subprocess.run(
-            [busybox_path, "sh", "-c", command],
+            [bb, "sh", "-c", full_cmd],
             capture_output=True,
             text=True,
             timeout=30,
-            cwd=safe_cwd
+            cwd=safe_cwd,
+            env=bb_env
         )
         output = ""
         if result.stdout:
