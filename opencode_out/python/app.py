@@ -474,6 +474,10 @@ def set_working_dir():
         working_dir = ""
         return jsonify({"status": "ok", "working_dir": ""})
 
+@app.route("/ping", methods=["GET"])
+def ping():
+    return jsonify({"status": "ok"})
+
 @app.route("/ls", methods=["GET"])
 def list_dir():
     global working_dir
@@ -526,8 +530,10 @@ def chat():
 
     def generate():
         global history
+        import time
         messages = list(msgs_with_sys)
         full_content = ""
+        last_heartbeat = time.time()
 
         for _round in range(6):
             payload = {
@@ -551,6 +557,10 @@ def chat():
             for raw in api_resp.iter_lines():
                 if not raw:
                     continue
+                # Heartbeat every 10s during streaming
+                if time.time() - last_heartbeat > 10:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                    last_heartbeat = time.time()
                 line = raw.decode("utf-8", errors="replace")
                 if not line.startswith("data: "):
                     continue

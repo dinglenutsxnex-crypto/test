@@ -658,6 +658,9 @@ async function send() {
                         }
                         break;
                     }
+                    case 'heartbeat': {
+                        break;
+                    }
                     case 'history_update': {
                         // Backend sends updated history after each round
                         if (chat) {
