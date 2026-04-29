@@ -5,7 +5,7 @@ import glob as glob_module
 import fnmatch
 import requests
 from flask import Flask, send_file, request, jsonify, send_from_directory, Response, stream_with_context
-from python.config import API_URL, MODEL, HOST, PORT, WORKING_DIR
+from python.config import API_URL, MODEL, HOST, PORT, WORKING_DIR, MAX_TOKENS
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 app = Flask(__name__, template_folder=ROOT, static_folder=ROOT + '/ui')
@@ -535,17 +535,18 @@ def chat():
         full_content = ""
         last_heartbeat = time.time()
 
-        for _round in range(6):
+        for _round in range(1000):
             payload = {
                 "model": model,
                 "messages": messages,
                 "stream": True,
                 "tools": TOOLS,
-                "tool_choice": "auto"
+                "tool_choice": "auto",
+                "max_tokens": MAX_TOKENS
             }
 
             try:
-                api_resp = requests.post(API_URL, json=payload, stream=True, timeout=180)
+                api_resp = requests.post(API_URL, json=payload, stream=True, timeout=600)
                 api_resp.raise_for_status()
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
@@ -557,8 +558,7 @@ def chat():
             for raw in api_resp.iter_lines():
                 if not raw:
                     continue
-                # Heartbeat every 10s during streaming
-                if time.time() - last_heartbeat > 10:
+                if time.time() - last_heartbeat > 8:
                     yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
                     last_heartbeat = time.time()
                 line = raw.decode("utf-8", errors="replace")
