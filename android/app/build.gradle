@@ -41,7 +41,7 @@ android {
     sourceSets {
         main {
             python.srcDirs = ["../../opencode_out"]
-            assets.srcDirs = ["src/main/assets"]
+            jniLibs.srcDirs = ["src/main/jniLibs"]
         }
     }
 }

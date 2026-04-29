@@ -30,10 +30,6 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.FileOutputStream;
-
 public class MainActivity extends Activity {
 
     public static MainActivity instance;
@@ -97,19 +93,10 @@ public class MainActivity extends Activity {
     }
 
     private void extractToybox() {
-        File toybox = new File(getFilesDir(), "toybox");
         try {
-            if (!toybox.exists() || toybox.length() == 0) {
-                InputStream in = getAssets().open("toybox");
-                OutputStream out = new FileOutputStream(toybox);
-                byte[] buf = new byte[8192];
-                int len;
-                while ((len = in.read(buf)) != -1) out.write(buf, 0, len);
-                in.close();
-                out.close();
-            }
-
-            Runtime.getRuntime().exec(new String[]{"chmod", "755", toybox.getAbsolutePath()}).waitFor();
+            String nativeDir = getApplicationInfo().nativeLibraryDir;
+            File toybox = new File(nativeDir, "libtoybox.so");
+            if (!toybox.exists()) return;
 
             File pathFile = new File(getFilesDir(), "toybox_path.txt");
             java.io.FileWriter w = new java.io.FileWriter(pathFile);
