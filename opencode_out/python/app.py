@@ -535,30 +535,10 @@ def tool_github_walk(action, repo, file_path=None, branch=None):
 
 
 def _get_toybox_path():
-    possible_path_files = [
-        "/data/data/com.opencode.app/files/toybox_path.txt",
-        "/data/user/0/com.opencode.app/files/toybox_path.txt",
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "toybox_path.txt"),
-    ]
-    for p in possible_path_files:
-        if os.path.isfile(p):
-            try:
-                with open(p) as f:
-                    path = f.read().strip()
-                if path and os.path.isfile(path) and os.access(path, os.X_OK):
-                    return path
-            except Exception:
-                pass
-
-    native_lib_dirs = [
-        "/data/app/com.opencode.app-1/lib/arm64",
-        "/data/app/com.opencode.app-2/lib/arm64",
-    ]
-    for d in native_lib_dirs:
-        candidate = os.path.join(d, "libtoybox.so")
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
-
+    candidates = ["/system/bin/toybox", "/usr/bin/toybox", "/bin/toybox"]
+    for p in candidates:
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
     return None
 
 
