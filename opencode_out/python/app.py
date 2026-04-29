@@ -423,8 +423,10 @@ def tool_exec_busybox(command, cwd=None):
             "pgrep","pkill","killall","vi","diff","patch","zip","unzip",
             "gzip","gunzip","bzip2","bunzip2","lzma","unlzma","xz","unxz",
         ]
-        fn_block = "\n".join(
-            f"{a}() {{ {bb} {a} \"$@\"; }}" for a in applets
+        # Assign bb path to a shell var so special chars in the path don't break function defs
+        fn_block = "_BB=\"" + bb + "\"\n"
+        fn_block += "\n".join(
+            f"{a}() {{ \"$_BB\" {a} \"$@\"; }}" for a in applets
         )
         full_cmd = fn_block + "\n" + command
 
