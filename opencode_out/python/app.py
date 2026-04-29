@@ -351,16 +351,13 @@ def tool_write(content, filePath):
 
 
 def _find_busybox():
-    """Locate the busybox binary by reading the path file Java wrote, or by scanning known dirs."""
-    import subprocess as _sp
-
-    # 1. Read the path file written by Java (checks both filesDir and codeCacheDir variants)
+    """Locate the busybox binary (installed as libexec.so in the native lib dir)."""
     pkg = "com.opencode.app"
+
+    # 1. Read the path file written by Java on startup (most reliable)
     path_file_candidates = [
         f"/data/data/{pkg}/files/busybox_path.txt",
         f"/data/user/0/{pkg}/files/busybox_path.txt",
-        f"/data/data/{pkg}/code_cache/busybox_path.txt",
-        f"/data/user/0/{pkg}/code_cache/busybox_path.txt",
     ]
     for pf in path_file_candidates:
         if os.path.isfile(pf):
@@ -372,16 +369,19 @@ def _find_busybox():
             except Exception:
                 pass
 
-    # 2. Direct scan of known exec-allowed locations
-    direct_candidates = [
-        f"/data/data/{pkg}/code_cache/busybox",
-        f"/data/user/0/{pkg}/code_cache/busybox",
-        f"/data/data/{pkg}/app_exec_bin/busybox",
-        f"/data/user/0/{pkg}/app_exec_bin/busybox",
+    # 2. Scan native library dirs directly — busybox ships as libexec.so
+    #    These dirs are always exec-allowed (installed by the package manager).
+    import glob as _glob
+    native_lib_patterns = [
+        f"/data/app/{pkg}-*/lib/arm64/libexec.so",
+        f"/data/app/*/base.apk!/lib/arm64-v8a/libexec.so",
+        # Android 10+ may use a different base path
+        f"/data/app/~~*/{pkg}-*/lib/arm64/libexec.so",
     ]
-    for candidate in direct_candidates:
-        if os.path.isfile(candidate):
-            return candidate
+    for pattern in native_lib_patterns:
+        matches = _glob.glob(pattern)
+        if matches:
+            return matches[0]
 
     return None
 
@@ -395,8 +395,10 @@ def tool_exec_busybox(command, cwd=None):
     if not busybox_path:
         return (
             "BusyBox binary not found.\n"
-            "Expected location: app code_cache dir (e.g. /data/user/0/com.opencode.app/code_cache/busybox).\n"
-            "Make sure the app was freshly launched after the latest build."
+            "It should be installed as libexec.so in the app native library dir.\n"
+            "Make sure: (1) libexec.so is in jniLibs/arm64-v8a/, "
+            "(2) the app was reinstalled after that change, "
+            "(3) the app was launched at least once so Java writes busybox_path.txt."
         )
 
     if not os.access(busybox_path, os.X_OK):
@@ -404,10 +406,9 @@ def tool_exec_busybox(command, cwd=None):
             os.chmod(busybox_path, 0o755)
         except Exception as e:
             return (
-                f"BusyBox exists at {busybox_path} but is not executable.\n"
-                f"chmod failed: {e}\n"
-                "This usually means the binary is still in a noexec directory (filesDir). "
-                "Rebuild with the latest MainActivity.java which uses codeCacheDir."
+                f"BusyBox found at {busybox_path} but is not executable and chmod failed: {e}\n"
+                "The native library dir should always be exec-allowed — "
+                "verify libexec.so is in jniLibs/arm64-v8a/ and the app was freshly installed."
             )
 
     work_dir = cwd if cwd and os.path.isdir(cwd) else os.path.dirname(busybox_path)

@@ -155,57 +155,36 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ── BusyBox extraction ────────────────────────────────────────────────────
+    // ── BusyBox setup ─────────────────────────────────────────────────────────
     //
-    // Android mounts getFilesDir() with the "noexec" flag, so binaries copied
-    // there cannot be executed even after chmod +x.  The exec-safe locations are:
-    //   1. getCodeCacheDir()  — guaranteed exec-allowed by the OS (API 21+)
-    //   2. getDir("exec_bin", MODE_PRIVATE) — fallback, also exec-permitted
-    // We use getCodeCacheDir() and fall back to getDir("exec_bin", ...).
+    // busybox is shipped as jniLibs/arm64-v8a/libexec.so so the Android
+    // package manager installs it into the app's native library directory,
+    // which is always mounted exec-allowed (unlike filesDir / codeCacheDir).
+    // We just need to discover that path and write it for Python to read.
 
     private void extractBusybox() {
-        // codeCacheDir is exec-allowed on all API 21+ devices (unlike filesDir)
-        File execDir = getApplicationContext().getCodeCacheDir();
-        if (execDir == null || !execDir.exists()) {
-            execDir = getApplicationContext().getDir("exec_bin", MODE_PRIVATE);
+        // The native lib dir is exec-allowed on all Android versions without root.
+        // Android installs libexec.so there automatically at install/update time.
+        String nativeLibDir = getApplicationInfo().nativeLibraryDir;
+        File busyboxFile = new File(nativeLibDir, "libexec.so");
+
+        if (!busyboxFile.exists()) {
+            // Shouldn't happen after install, but log it for debugging
+            android.util.Log.e("BusyBox", "libexec.so not found in: " + nativeLibDir);
+            busyboxPath = "";
+        } else {
+            busyboxPath = busyboxFile.getAbsolutePath();
+            // Ensure executable bit is set (should already be, but be defensive)
+            busyboxFile.setExecutable(true, true);
         }
-        execDir.mkdirs();
 
-        File destFile = new File(execDir, "busybox");
-        busyboxPath = destFile.getAbsolutePath();
-
-        // Write the path to filesDir so Python can discover it
+        // Write the path so Python can find it
         writeBusyboxPathFile(busyboxPath);
-
-        if (destFile.exists() && destFile.length() > 1000) {
-            // Already extracted — re-apply executable bit defensively
-            destFile.setExecutable(true, true);
-            return;
-        }
-
-        // Extract from assets
-        try (InputStream in = getAssets().open("busybox");
-             FileOutputStream out = new FileOutputStream(destFile)) {
-            byte[] buf = new byte[16384];
-            int read;
-            while ((read = in.read(buf)) != -1) {
-                out.write(buf, 0, read);
-            }
-            out.getFD().sync();
-        } catch (Exception e) {
-            e.printStackTrace();
-            return;
-        }
-
-        // Make executable for owner and group
-        destFile.setExecutable(true, true);
     }
 
     private void writeBusyboxPathFile(String path) {
-        // Write to filesDir and codeCacheDir so Python finds it from either location
         File[] dirs = {
             getApplicationContext().getFilesDir(),
-            getApplicationContext().getCodeCacheDir()
         };
         for (File dir : dirs) {
             try {
@@ -218,7 +197,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ── Flask server ──────────────────────────────────────────────────────────
+        // ── Flask server ──────────────────────────────────────────────────────────
 
     private void startFlaskServer() {
         Thread t = new Thread(() -> {
