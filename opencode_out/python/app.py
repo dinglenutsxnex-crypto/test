@@ -170,16 +170,91 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "edit",
-            "description": "Replace a specific string in a file with new content.",
+            "description": "Replace a specific string in a file with new content. Use regex for advanced matching.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "filePath": {"type": "string", "description": "Path to the file (relative to working directory)"},
-                    "oldString": {"type": "string", "description": "Text to find and replace"},
+                    "oldString": {"type": "string", "description": "Text or regex pattern to find and replace"},
                     "newString": {"type": "string", "description": "Text to replace it with"},
-                    "replaceAll": {"type": "boolean", "description": "Replace all occurrences (default false)", "default": False}
+                    "replaceAll": {"type": "boolean", "description": "Replace all occurrences (default false)", "default": False},
+                    "useRegex": {"type": "boolean", "description": "Treat oldString as regex (default false)", "default": False}
                 },
                 "required": ["filePath", "oldString", "newString"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "shell",
+            "description": "Run a shell command in the working directory. Use for running scripts, git commands, installs, etc.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to execute"},
+                    "timeout": {"type": "integer", "description": "Timeout in seconds (default 60)", "default": 60}
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mkdir",
+            "description": "Create a new directory (folder).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dirPath": {"type": "string", "description": "Path to create (relative to working directory)"},
+                    "parents": {"type": "boolean", "description": "Create parent directories if needed", "default": True}
+                },
+                "required": ["dirPath"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rm",
+            "description": "Remove files or directories.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to remove (file or directory)"},
+                    "recursive": {"type": "boolean", "description": "Remove directories recursively", "default": False}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mv",
+            "description": "Move or rename a file or directory.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string", "description": "Source path (relative to working directory)"},
+                    "destination": {"type": "string", "description": "Destination path (relative to working directory)"}
+                },
+                "required": ["source", "destination"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ls",
+            "description": "List files and directories with details (size, modified date).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Directory path (defaults to working directory)"}
+                },
+                "required": []
             }
         }
     }
@@ -410,7 +485,7 @@ def tool_write(content, filePath):
         return f"Write error: {e}"
 
 
-def tool_edit(filePath, oldString, newString, replaceAll=False):
+def tool_edit(filePath, oldString, newString, replaceAll=False, useRegex=False):
     global working_dir
     if not working_dir:
         return "No working directory set. Use /set_working_dir to set it first."
@@ -422,19 +497,175 @@ def tool_edit(filePath, oldString, newString, replaceAll=False):
     try:
         with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
-        if replaceAll:
-            new_content = content.replace(oldString, newString)
-            count = content.count(oldString)
+        
+        if useRegex:
+            import re
+            pattern = re.compile(oldString)
+            if replaceAll:
+                new_content = pattern.sub(newString, content)
+                count = len(pattern.findall(content))
+            else:
+                new_content, count = pattern.subn(newString, content, 1)
+                count = 1 if count else 0
+            if count == 0:
+                return "Pattern not found in file"
         else:
-            if oldString not in content:
-                return "Text not found in file"
-            new_content = content.replace(oldString, newString, 1)
-            count = 1
+            if replaceAll:
+                new_content = content.replace(oldString, newString)
+                count = content.count(oldString)
+            else:
+                if oldString not in content:
+                    return "Text not found in file"
+                new_content = content.replace(oldString, newString, 1)
+                count = 1
+        
         with open(full_path, 'w', encoding='utf-8') as f:
             f.write(new_content)
         return f"Replaced {count} occurrence(s) in {filePath}"
     except Exception as e:
         return f"Edit error: {e}"
+
+
+def tool_shell(command, timeout=60):
+    global working_dir
+    if not working_dir:
+        return "No working directory set."
+    import subprocess
+    import shlex
+    
+    # Security: Only allow commands within working directory
+    try:
+        # Resolve command and validate it's within allowed dirs
+        cmd = command.strip()
+        
+        # Block dangerous commands
+        dangerous = ['rm -rf /', 'dd if=', ':(){:|:&};:', 'mkfs', 'fdisk']
+        for d in dangerous:
+            if d in cmd:
+                return f"Command blocked: contains dangerous pattern"
+        
+        # Use shell=True for complex commands but validate
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            cwd=working_dir,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+        
+        output = result.stdout
+        if result.stderr:
+            output += "\n[stderr]\n" + result.stderr
+        
+        if not output:
+            output = "(no output)"
+        
+        # Truncate long outputs
+        if len(output) > 50000:
+            output = output[:50000] + "\n... (truncated)"
+        
+        return f"[exit code: {result.returncode}]\n{output}"
+    except subprocess.TimeoutExpired:
+        return f"Command timed out after {timeout}s"
+    except Exception as e:
+        return f"Shell error: {e}"
+
+
+def tool_mkdir(dirPath, parents=True):
+    global working_dir
+    if not working_dir:
+        return "No working directory set."
+    full_path = resolve_path(dirPath)
+    if not full_path or not is_within_dir(full_path, working_dir):
+        return f"Error: Path '{dirPath}' is outside working directory"
+    try:
+        os.makedirs(full_path, exist_ok=parents)
+        return f"Created directory: {dirPath}"
+    except Exception as e:
+        return f"mkdir error: {e}"
+
+
+def tool_rm(path, recursive=False):
+    global working_dir
+    if not working_dir:
+        return "No working directory set."
+    full_path = resolve_path(path)
+    if not full_path or not is_within_dir(full_path, working_dir):
+        return f"Error: Path '{path}' is outside working directory"
+    try:
+        if os.path.isfile(full_path):
+            os.remove(full_path)
+            return f"Removed file: {path}"
+        elif os.path.isdir(full_path):
+            if recursive:
+                import shutil
+                shutil.rmtree(full_path)
+                return f"Removed directory: {path}"
+            else:
+                return f"Use recursive=true to remove directory: {path}"
+        else:
+            return f"Path not found: {path}"
+    except Exception as e:
+        return f"rm error: {e}"
+
+
+def tool_mv(source, destination):
+    global working_dir
+    if not working_dir:
+        return "No working directory set."
+    src_path = resolve_path(source)
+    dst_path = resolve_path(destination)
+    if not src_path or not is_within_dir(src_path, working_dir):
+        return f"Error: Source '{source}' is outside working directory"
+    if not dst_path or not is_within_dir(dst_path, working_dir):
+        return f"Error: Destination '{destination}' is outside working directory"
+    try:
+        import shutil
+        shutil.move(src_path, dst_path)
+        return f"Moved: {source} → {destination}"
+    except Exception as e:
+        return f"mv error: {e}"
+
+
+def tool_ls(path=None):
+    global working_dir
+    if not working_dir:
+        return "No working directory set."
+    base = resolve_path(path) if path else working_dir
+    if not is_within_dir(base, working_dir):
+        return f"Error: Path is outside working directory"
+    if not os.path.isdir(base):
+        return f"Error: Not a directory: {path or working_dir}"
+    try:
+        import time
+        items = []
+        for name in sorted(os.listdir(base)):
+            fpath = os.path.join(base, name)
+            try:
+                stat = os.stat(fpath)
+                size = stat.st_size
+                mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime))
+                is_dir = os.path.isdir(fpath)
+                items.append({
+                    "name": name,
+                    "is_dir": is_dir,
+                    "size": size,
+                    "mtime": mtime
+                })
+            except Exception:
+                items.append({"name": name, "is_dir": os.path.isdir(fpath), "size": "?", "mtime": "?"})
+        
+        # Format output like ls -la
+        lines = []
+        for item in items:
+            prefix = "d" if item["is_dir"] else "-"
+            size_str = str(item["size"]) if item["size"] != "?" else "?"
+            lines.append(f"{prefix}  {size_str:>10}  {item['mtime']}  {item['name']}")
+        
+        return "Type  Size      Modified     Name\n" + "\n".join(lines)
+    except Exception as e:
+        return f"ls error: {e}"
 
 
 def run_tool(name, args):
@@ -451,7 +682,17 @@ def run_tool(name, args):
     elif name == "write":
         return tool_write(args.get("content", ""), args.get("filePath", ""))
     elif name == "edit":
-        return tool_edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), args.get("replaceAll", False))
+        return tool_edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), args.get("replaceAll", False), args.get("useRegex", False))
+    elif name == "shell":
+        return tool_shell(args.get("command", ""), args.get("timeout", 60))
+    elif name == "mkdir":
+        return tool_mkdir(args.get("dirPath", ""), args.get("parents", True))
+    elif name == "rm":
+        return tool_rm(args.get("path", ""), args.get("recursive", False))
+    elif name == "mv":
+        return tool_mv(args.get("source", ""), args.get("destination", ""))
+    elif name == "ls":
+        return tool_ls(args.get("path"))
     return f"Unknown tool: {name}"
 
 
@@ -518,6 +759,7 @@ def chat():
     data = request.json
     user_msg = data.get("message", "")
     model = data.get("model", MODEL)
+    model_ctx = data.get("model_context", COMPACTION_THRESHOLD)  # Get from frontend
     history.append({"role": "user", "content": user_msg})
 
     dirs = working_dirs if working_dirs else ([working_dir] if working_dir else [])
@@ -542,15 +784,16 @@ def chat():
         last_heartbeat = time.time()
 
         # ── Context compaction ────────────────────────────────────────────────
-        # COMPACTION_THRESHOLD is used as the context_limit for mobile budgets.
+        # Use model-specific context limit (or fallback to default COMPACTION_THRESHOLD)
         # MAX_TOKENS is treated as the max output size.
+        context_limit = min(model_ctx, COMPACTION_THRESHOLD)  # Use smaller of model ctx or threshold
         compacted, previous_summary, did_compact = compact_messages(
             messages=list(history),
             system_messages=[system_msg],
             api_url=API_URL,
             model=model,
             previous_summary=previous_summary,
-            context_limit=COMPACTION_THRESHOLD,
+            context_limit=context_limit,
             max_output_tokens=MAX_TOKENS,
         )
         if did_compact:

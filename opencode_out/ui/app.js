@@ -176,6 +176,15 @@ async function switchChat(id) {
         sidebar.classList.add('collapsed');
         return;
     }
+    
+    // Clear any pending save timer from previous chat
+    const prevChat = activeChat();
+    if (prevChat && prevChat._saveTimer) {
+        clearTimeout(prevChat._saveTimer);
+        prevChat._saveTimer = null;
+        saveChats(); // Save previous chat before switching
+    }
+    
     activeChatId = id;
     const chat = activeChat();
     chatTitle.textContent = chat ? chat.title : 'new chat';
@@ -508,6 +517,9 @@ function createToolPill(name, args, group) {
     if (name === 'web_search') {
         icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`;
         label = `searching&nbsp;<em>${escHtml(args.query||'')}</em>`;
+    } else if (name === 'web_fetch') {
+        icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`;
+        label = `fetching&nbsp;<em>${escHtml(args.url||'')}</em>`;
     } else if (name === 'glob') {
         icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
         label = `finding&nbsp;<em>${escHtml(args.pattern||'')}</em>`;
@@ -523,6 +535,21 @@ function createToolPill(name, args, group) {
     } else if (name === 'edit') {
         icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
         label = `editing&nbsp;<em>${escHtml(args.filePath||'')}</em>`;
+    } else if (name === 'shell') {
+        icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`;
+        label = `running&nbsp;<em>${escHtml(args.command||'')}</em>`;
+    } else if (name === 'mkdir') {
+        icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>`;
+        label = `creating&nbsp;<em>${escHtml(args.dirPath||'')}</em>`;
+    } else if (name === 'rm') {
+        icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`;
+        label = `removing&nbsp;<em>${escHtml(args.path||'')}</em>`;
+    } else if (name === 'mv') {
+        icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>`;
+        label = `moving&nbsp;<em>${escHtml(args.source||'')}</em>`;
+    } else if (name === 'ls') {
+        icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
+        label = `listing&nbsp;<em>${escHtml(args.path||'.')}</em>`;
     } else {
         icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><circle cx="12" cy="12" r="10"/></svg>`;
         label = `running&nbsp;<em>${escHtml(name)}</em>`;
@@ -598,7 +625,11 @@ async function send() {
         const resp = await fetch('/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: userMsg, model: selectedModel })
+            body: JSON.stringify({ 
+                message: userMsg, 
+                model: selectedModel,
+                model_context: selectedModelCtx 
+            })
         });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
@@ -663,10 +694,16 @@ async function send() {
                     }
                     case 'history_update': {
                         // Backend sends updated history after each round
+                        // Debounce saves to prevent excessive I/O
                         if (chat) {
                             chat.history = ev.history;
-                            saveChats();
-                            updateContextBadge();
+                            updateContextBadge(); // Update UI immediately
+                            if (!chat._saveTimer) {
+                                chat._saveTimer = setTimeout(() => {
+                                    chat._saveTimer = null;
+                                    saveChats();
+                                }, 2000); // Save max once per 2 seconds
+                            }
                         }
                         break;
                     }
@@ -692,6 +729,14 @@ async function send() {
         if (assistantDiv)  sealAssistant(assistantDiv, assistantText);
         if (toolPill)      toolPill.classList.add('done');
 
+        // Ensure final save when done
+        const chat = activeChat();
+        if (chat && chat._saveTimer) {
+            clearTimeout(chat._saveTimer);
+            chat._saveTimer = null;
+            saveChats();
+        }
+
     } catch (e) {
         clearInterval(keepAliveTimer);
         const d = assistantDiv || createAssistantShell();
@@ -700,10 +745,19 @@ async function send() {
     }
 
     clearInterval(keepAliveTimer);
-    sending = false;
-    setLoading(false);
-    input.focus();
-}
+        sending = false;
+        setLoading(false);
+        
+        // Ensure history is saved even on error
+        const chat = activeChat();
+        if (chat && chat._saveTimer) {
+            clearTimeout(chat._saveTimer);
+            chat._saveTimer = null;
+            saveChats();
+        }
+        
+        input.focus();
+    }
 
 sendBtn.onclick = send;
 input.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
