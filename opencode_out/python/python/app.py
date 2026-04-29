@@ -45,8 +45,12 @@ def get_opencode_dir():
     return d
 
 
-def chats_file():
-    return os.path.join(get_opencode_dir(), "chats.json")
+def chats_index_file():
+    return os.path.join(get_opencode_dir(), "index.json")
+
+def chat_file(chat_id):
+    safe = re.sub(r'[^a-zA-Z0-9_\-]', '_', chat_id)
+    return os.path.join(get_opencode_dir(), f"{safe}.json")
 
 def resolve_path(path, cwd=None):
     if not cwd:
@@ -169,6 +173,21 @@ TOOLS = [
                     "replaceAll": {"type": "boolean", "description": "Replace all occurrences (default false)", "default": False}
                 },
                 "required": ["filePath", "oldString", "newString"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "exec_busybox",
+            "description": "Execute a shell command using BusyBox on the Android device. Provides access to 300+ Unix commands: ls, cp, mv, rm, mkdir, chmod, grep, sed, awk, cat, head, tail, wc, wget, curl, ping, ps, kill, df, du, tar, gzip, zip and many more. Use this for file operations, text processing, system inspection, and general shell scripting.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The shell command to run (e.g., 'ls -la /sdcard', 'df -h', 'ps aux')"},
+                    "cwd": {"type": "string", "description": "Working directory for the command (optional, defaults to app files dir)"}
+                },
+                "required": ["command"]
             }
         }
     }
@@ -331,6 +350,57 @@ def tool_write(content, filePath):
         return f"Write error: {e}"
 
 
+def tool_exec_busybox(command, cwd=None):
+    """Execute a command using the bundled BusyBox binary."""
+    import subprocess
+
+    # Find busybox binary path (written by Android Java on startup)
+    busybox_path = None
+    possible_path_files = [
+        "/data/data/com.opencode.app/files/busybox_path.txt",
+    ]
+    for pf in possible_path_files:
+        if os.path.isfile(pf):
+            try:
+                with open(pf, "r") as f:
+                    busybox_path = f.read().strip()
+                break
+            except Exception:
+                pass
+
+    if not busybox_path or not os.path.isfile(busybox_path):
+        return "BusyBox binary not found. Make sure it was extracted on app startup."
+
+    if not os.access(busybox_path, os.X_OK):
+        try:
+            os.chmod(busybox_path, 0o755)
+        except Exception as e:
+            return f"BusyBox is not executable and chmod failed: {e}"
+
+    work_dir = cwd if cwd and os.path.isdir(cwd) else "/data/data/com.opencode.app/files"
+
+    try:
+        result = subprocess.run(
+            [busybox_path, "sh", "-c", command],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=work_dir
+        )
+        output = ""
+        if result.stdout:
+            output += result.stdout
+        if result.stderr:
+            output += result.stderr
+        if result.returncode != 0:
+            output += f"\n[exit code: {result.returncode}]"
+        return output.strip() if output.strip() else f"[Command completed with exit code {result.returncode}]"
+    except subprocess.TimeoutExpired:
+        return "Command timed out after 30 seconds."
+    except Exception as e:
+        return f"Execution error: {e}"
+
+
 def tool_edit(filePath, oldString, newString, replaceAll=False):
     global working_dir
     if not working_dir:
@@ -373,22 +443,9 @@ def run_tool(name, args):
         return tool_write(args.get("content", ""), args.get("filePath", ""))
     elif name == "edit":
         return tool_edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), args.get("replaceAll", False))
+    elif name == "exec_busybox":
+        return tool_exec_busybox(args.get("command", ""), args.get("cwd"))
     return f"Unknown tool: {name}"
-
-
-@app.route("/ping", methods=["GET"])
-def ping():
-    return jsonify({"status": "ok"})
-
-
-@app.route("/context_info", methods=["GET"])
-def context_info():
-    """Return rough token count of current history for context display."""
-    global history
-    # Rough estimate: ~4 chars per token
-    total_chars = sum(len(str(m.get("content", ""))) for m in history)
-    estimated_tokens = total_chars // 4
-    return jsonify({"tokens_used": estimated_tokens, "messages": len(history)})
 
 
 @app.route("/")
@@ -595,11 +652,11 @@ def set_working_dirs():
     global working_dirs, working_dir
     data = request.json
     dirs = data.get("working_dirs", [])
-    # Validate each dir
     valid = [d for d in dirs if d and os.path.isdir(d)]
+    invalid = [d for d in dirs if d and not os.path.isdir(d)]
     working_dirs = valid
     working_dir = valid[0] if valid else ""
-    return jsonify({"status": "ok", "working_dirs": working_dirs})
+    return jsonify({"status": "ok", "working_dirs": working_dirs, "invalid_dirs": invalid})
 
 
 @app.route("/switch_chat", methods=["POST"])
@@ -618,10 +675,26 @@ def storage_dir():
 
 @app.route("/save_chats", methods=["POST"])
 def save_chats():
+    """Save all chats: index.json for ordering + one file per chat."""
     data = request.json
+    chats = data.get("chats", [])
+    active_id = data.get("activeChatId")
     try:
-        with open(chats_file(), "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        odir = get_opencode_dir()
+        # Write each chat to its own file
+        for chat in chats:
+            cid = chat.get("id", "")
+            if not cid:
+                continue
+            with open(chat_file(cid), "w", encoding="utf-8") as f:
+                json.dump(chat, f, ensure_ascii=False, indent=2)
+        # Write index (just ids + titles for listing, no history)
+        index = {
+            "activeChatId": active_id,
+            "chatIds": [c["id"] for c in chats if c.get("id")]
+        }
+        with open(chats_index_file(), "w", encoding="utf-8") as f:
+            json.dump(index, f, ensure_ascii=False, indent=2)
         return jsonify({"status": "ok"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
@@ -629,14 +702,50 @@ def save_chats():
 
 @app.route("/load_chats", methods=["GET"])
 def load_chats():
+    """Load all chats from per-chat files via index."""
     try:
-        with open(chats_file(), "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return jsonify(data)
+        with open(chats_index_file(), "r", encoding="utf-8") as f:
+            index = json.load(f)
+        chats = []
+        for cid in index.get("chatIds", []):
+            try:
+                with open(chat_file(cid), "r", encoding="utf-8") as f:
+                    chats.append(json.load(f))
+            except Exception:
+                pass  # Skip missing/corrupt chat files gracefully
+        return jsonify({"chats": chats, "activeChatId": index.get("activeChatId")})
     except FileNotFoundError:
         return jsonify({"chats": [], "activeChatId": None})
     except Exception as e:
         return jsonify({"chats": [], "activeChatId": None, "error": str(e)})
+
+
+@app.route("/delete_chat", methods=["POST"])
+def delete_chat():
+    """Delete a single chat's JSON file."""
+    data = request.json
+    cid = data.get("chat_id", "")
+    if not cid:
+        return jsonify({"status": "error", "message": "No chat_id"})
+    try:
+        path = chat_file(cid)
+        if os.path.isfile(path):
+            os.remove(path)
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+
+@app.route("/exec_busybox", methods=["POST"])
+def exec_busybox_route():
+    """HTTP endpoint to run a BusyBox command directly."""
+    data = request.json or {}
+    command = data.get("command", "")
+    cwd = data.get("cwd")
+    if not command:
+        return jsonify({"status": "error", "message": "No command provided"})
+    result = tool_exec_busybox(command, cwd)
+    return jsonify({"status": "ok", "output": result})
 
 
 if __name__ == "__main__":

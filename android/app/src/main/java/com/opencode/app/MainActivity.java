@@ -25,6 +25,9 @@ import com.chaquo.python.Python;
 import com.chaquo.python.android.AndroidPlatform;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -40,6 +43,7 @@ public class MainActivity extends Activity {
     private SharedPreferences prefs;
     private String selectedFolderPath;
     private String storageFolderPath;
+    private String busyboxPath;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -75,6 +79,7 @@ public class MainActivity extends Activity {
 
         setupFullscreen();
         requestFileAccess();
+        extractBusybox();
 
         webView = findViewById(R.id.webview);
         setupWebView();
@@ -148,6 +153,43 @@ public class MainActivity extends Activity {
             new Handler(Looper.getMainLooper()).postDelayed(
                 () -> webView.loadUrl(FLASK_URL), 500);
         }
+    }
+
+    // ── BusyBox extraction ────────────────────────────────────────────────────
+
+    private void extractBusybox() {
+        File destFile = new File(getApplicationContext().getFilesDir(), "busybox");
+        busyboxPath = destFile.getAbsolutePath();
+
+        // Write busybox path so Python can find it
+        try {
+            File pathFile = new File(getApplicationContext().getFilesDir(), "busybox_path.txt");
+            java.io.FileWriter fw = new java.io.FileWriter(pathFile);
+            fw.write(busyboxPath);
+            fw.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        if (destFile.exists() && destFile.length() > 1000) {
+            // Already extracted; ensure it's executable
+            destFile.setExecutable(true, false);
+            return;
+        }
+
+        try (InputStream in = getAssets().open("busybox");
+             OutputStream out = new FileOutputStream(destFile)) {
+            byte[] buf = new byte[8192];
+            int read;
+            while ((read = in.read(buf)) != -1) {
+                out.write(buf, 0, read);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            return;
+        }
+
+        destFile.setExecutable(true, false);
     }
 
     // ── Flask server ──────────────────────────────────────────────────────────

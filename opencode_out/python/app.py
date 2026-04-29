@@ -175,6 +175,21 @@ TOOLS = [
                 "required": ["filePath", "oldString", "newString"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "exec_busybox",
+            "description": "Execute a shell command using BusyBox on the Android device. Provides access to 300+ Unix commands: ls, cp, mv, rm, mkdir, chmod, grep, sed, awk, cat, head, tail, wc, wget, curl, ping, ps, kill, df, du, tar, gzip, zip and many more. Use this for file operations, text processing, system inspection, and general shell scripting.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The shell command to run (e.g., 'ls -la /sdcard', 'df -h', 'ps aux')"},
+                    "cwd": {"type": "string", "description": "Working directory for the command (optional, defaults to app files dir)"}
+                },
+                "required": ["command"]
+            }
+        }
     }
 ]
 
@@ -335,6 +350,57 @@ def tool_write(content, filePath):
         return f"Write error: {e}"
 
 
+def tool_exec_busybox(command, cwd=None):
+    """Execute a command using the bundled BusyBox binary."""
+    import subprocess
+
+    # Find busybox binary path (written by Android Java on startup)
+    busybox_path = None
+    possible_path_files = [
+        "/data/data/com.opencode.app/files/busybox_path.txt",
+    ]
+    for pf in possible_path_files:
+        if os.path.isfile(pf):
+            try:
+                with open(pf, "r") as f:
+                    busybox_path = f.read().strip()
+                break
+            except Exception:
+                pass
+
+    if not busybox_path or not os.path.isfile(busybox_path):
+        return "BusyBox binary not found. Make sure it was extracted on app startup."
+
+    if not os.access(busybox_path, os.X_OK):
+        try:
+            os.chmod(busybox_path, 0o755)
+        except Exception as e:
+            return f"BusyBox is not executable and chmod failed: {e}"
+
+    work_dir = cwd if cwd and os.path.isdir(cwd) else "/data/data/com.opencode.app/files"
+
+    try:
+        result = subprocess.run(
+            [busybox_path, "sh", "-c", command],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=work_dir
+        )
+        output = ""
+        if result.stdout:
+            output += result.stdout
+        if result.stderr:
+            output += result.stderr
+        if result.returncode != 0:
+            output += f"\n[exit code: {result.returncode}]"
+        return output.strip() if output.strip() else f"[Command completed with exit code {result.returncode}]"
+    except subprocess.TimeoutExpired:
+        return "Command timed out after 30 seconds."
+    except Exception as e:
+        return f"Execution error: {e}"
+
+
 def tool_edit(filePath, oldString, newString, replaceAll=False):
     global working_dir
     if not working_dir:
@@ -377,6 +443,8 @@ def run_tool(name, args):
         return tool_write(args.get("content", ""), args.get("filePath", ""))
     elif name == "edit":
         return tool_edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), args.get("replaceAll", False))
+    elif name == "exec_busybox":
+        return tool_exec_busybox(args.get("command", ""), args.get("cwd"))
     return f"Unknown tool: {name}"
 
 
@@ -666,6 +734,18 @@ def delete_chat():
         return jsonify({"status": "ok"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
+
+
+@app.route("/exec_busybox", methods=["POST"])
+def exec_busybox_route():
+    """HTTP endpoint to run a BusyBox command directly."""
+    data = request.json or {}
+    command = data.get("command", "")
+    cwd = data.get("cwd")
+    if not command:
+        return jsonify({"status": "error", "message": "No command provided"})
+    result = tool_exec_busybox(command, cwd)
+    return jsonify({"status": "ok", "output": result})
 
 
 if __name__ == "__main__":
