@@ -359,7 +359,12 @@ def _read_busybox_diag():
     ]:
         try:
             with open(path_file, "r") as f:
-                return dict(line.split("=", 1) for line in f.read().splitlines() if "=" in line)
+                result = {}
+                for line in f.read().splitlines():
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        result[k] = v
+                return result
         except Exception:
             continue
     return {}
@@ -395,7 +400,11 @@ def tool_exec_busybox(command, cwd=None):
                 "verify libexec.so is in jniLibs/arm64-v8a/ and the app was freshly installed."
             )
 
-    work_dir = cwd if cwd and os.path.isdir(cwd) else os.path.dirname(busybox_path)
+    safe_cwd = "/data/data/com.opencode.app/files"
+    if cwd and os.path.isdir(cwd):
+        safe_cwd = cwd
+    elif not os.path.isdir(safe_cwd):
+        safe_cwd = "/data/local/tmp"
 
     try:
         result = subprocess.run(
@@ -403,7 +412,7 @@ def tool_exec_busybox(command, cwd=None):
             capture_output=True,
             text=True,
             timeout=30,
-            cwd=work_dir
+            cwd=safe_cwd
         )
         output = ""
         if result.stdout:
