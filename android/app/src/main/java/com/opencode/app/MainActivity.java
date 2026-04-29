@@ -78,6 +78,7 @@ public class MainActivity extends Activity {
             e.printStackTrace();
         }
 
+        extractToybox();
         setupFullscreen();
         requestFileAccess();
 
@@ -89,6 +90,20 @@ public class MainActivity extends Activity {
 
         new Handler(Looper.getMainLooper()).postDelayed(
             () -> webView.loadUrl(FLASK_URL), SERVER_START_DELAY_MS);
+    }
+
+    private void extractToybox() {
+        try {
+            String nativeDir = getApplicationInfo().nativeLibraryDir;
+            File toybox = new File(nativeDir, "libtoybox.so");
+            if (!toybox.exists()) return;
+            File pathFile = new File(getFilesDir(), "toybox_path.txt");
+            java.io.FileWriter w = new java.io.FileWriter(pathFile);
+            w.write(toybox.getAbsolutePath());
+            w.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     // ── Fullscreen ────────────────────────────────────────────────────────────

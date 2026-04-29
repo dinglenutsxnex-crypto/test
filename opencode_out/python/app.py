@@ -535,8 +535,20 @@ def tool_github_walk(action, repo, file_path=None, branch=None):
 
 
 def _get_toybox_path():
-    candidates = ["/system/bin/toybox", "/usr/bin/toybox", "/bin/toybox"]
+    candidates = [
+        "/data/data/com.opencode.app/files/toybox_path.txt",
+        "/data/user/0/com.opencode.app/files/toybox_path.txt",
+    ]
     for p in candidates:
+        if os.path.isfile(p):
+            try:
+                with open(p) as f:
+                    path = f.read().strip()
+                if path and os.path.isfile(path) and os.access(path, os.X_OK):
+                    return path
+            except Exception:
+                pass
+    for p in ["/system/bin/toybox", "/usr/bin/toybox", "/bin/toybox"]:
         if os.path.isfile(p) and os.access(p, os.X_OK):
             return p
     return None
@@ -544,6 +556,7 @@ def _get_toybox_path():
 
 def tool_shell(command, cwd=None):
     import subprocess
+    import shlex
     global working_dir
 
     toybox = _get_toybox_path()
@@ -555,8 +568,16 @@ def tool_shell(command, cwd=None):
         run_cwd = None
 
     try:
+        parts = shlex.split(command)
+    except ValueError as e:
+        return f"Parse error: {e}"
+
+    if not parts:
+        return "Empty command."
+
+    try:
         result = subprocess.run(
-            [toybox, "sh", "-c", command],
+            [toybox] + parts,
             cwd=run_cwd,
             capture_output=True,
             text=True,
