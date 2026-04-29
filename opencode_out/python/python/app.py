@@ -350,29 +350,26 @@ def tool_write(content, filePath):
         return f"Write error: {e}"
 
 
-# Set by Java (MainActivity.startFlaskServer) before Flask starts.
-# Falls back to glob scan if somehow not set.
+# Injected by Java via PyObject.put() before Flask starts.
 BUSYBOX_PATH = ""
 
 
 def _find_busybox():
-    """Return the busybox path injected by Java, or scan as fallback."""
-    # Primary: Java injects this directly before starting Flask
+    """Return busybox path — tries every known method in order."""
+    import glob as _glob
+
+    # 1. Direct injection by Java via appModule.put("BUSYBOX_PATH", path)
     if BUSYBOX_PATH and os.path.isfile(BUSYBOX_PATH):
         return BUSYBOX_PATH
 
-    # Fallback: glob the native lib dir (covers all Android path layouts)
-    import glob as _glob
-    pkg = "com.opencode.app"
-    patterns = [
-        f"/data/app/{pkg}-*/lib/arm64/libexec.so",
-        f"/data/app/~~*/{pkg}-*/lib/arm64/libexec.so",
-        f"/data/app/~~*/{pkg}*/lib/arm64/libexec.so",
-    ]
-    for pattern in patterns:
-        matches = _glob.glob(pattern)
-        if matches and os.path.isfile(matches[0]):
-            return matches[0]
+    # 2. Broad recursive glob — finds libexec.so anywhere under /data/app/
+    #    Works on all Android versions regardless of hash dir names
+    for entry in _glob.glob("/data/app/*/lib/arm64/libexec.so"):
+        if os.path.isfile(entry):
+            return entry
+    for entry in _glob.glob("/data/app/*/*/lib/arm64/libexec.so"):
+        if os.path.isfile(entry):
+            return entry
 
     return None
 
@@ -770,6 +767,22 @@ def exec_busybox_route():
     result = tool_exec_busybox(command, cwd)
     return jsonify({"status": "ok", "output": result})
 
+
+
+
+@app.route("/debug_busybox", methods=["GET"])
+def debug_busybox():
+    """Diagnostic endpoint — shows busybox discovery state."""
+    import glob as _glob
+    info = {
+        "BUSYBOX_PATH_var": BUSYBOX_PATH,
+        "BUSYBOX_PATH_exists": os.path.isfile(BUSYBOX_PATH) if BUSYBOX_PATH else False,
+        "found_by_finder": _find_busybox(),
+        "glob_data_app_1": _glob.glob("/data/app/*/lib/arm64/libexec.so"),
+        "glob_data_app_2": _glob.glob("/data/app/*/*/lib/arm64/libexec.so"),
+        "data_app_ls": os.listdir("/data/app") if os.path.isdir("/data/app") else "cant_list",
+    }
+    return jsonify(info)
 
 if __name__ == "__main__":
     print(f"OpenCode — http://localhost:{PORT}")
