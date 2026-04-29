@@ -163,24 +163,75 @@ public class MainActivity extends Activity {
     // We just need to discover that path and write it for Python to read.
 
     private void extractBusybox() {
+        busyboxPath = "";
+
         String nativeLibDir = getApplicationInfo().nativeLibraryDir;
-        File busyboxFile = new File(nativeLibDir, "libexec.so");
-        if (busyboxFile.exists()) {
-            busyboxPath = busyboxFile.getAbsolutePath();
-            busyboxFile.setExecutable(true, true);
-            android.util.Log.i("BusyBox", "Ready at: " + busyboxPath);
-        } else {
-            busyboxPath = "";
-            android.util.Log.e("BusyBox", "libexec.so missing from: " + nativeLibDir);
+        File fromNative = new File(nativeLibDir, "libexec.so");
+        if (fromNative.exists() && fromNative.length() > 1024) {
+            fromNative.setExecutable(true, true);
+            busyboxPath = fromNative.getAbsolutePath();
+            android.util.Log.i("BusyBox", "Found in nativeLibDir: " + busyboxPath);
         }
-        // Write diagnostic info to filesDir so Python can read it.
+
+        if (busyboxPath.isEmpty()) {
+            try {
+                Process proc = Runtime.getRuntime()
+                        .exec(new String[]{"find", "/data/app", "-name", "libexec.so"});
+                java.io.BufferedReader br = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(proc.getInputStream()));
+                String found = br.readLine();
+                br.close();
+                if (found != null && !found.trim().isEmpty()) {
+                    File f = new File(found.trim());
+                    if (f.exists() && f.length() > 1024) {
+                        f.setExecutable(true, true);
+                        busyboxPath = f.getAbsolutePath();
+                        android.util.Log.i("BusyBox", "Found via find: " + busyboxPath);
+                    }
+                }
+            } catch (Exception e) {
+                android.util.Log.w("BusyBox", "find scan failed: " + e.getMessage());
+            }
+        }
+
+        if (busyboxPath.isEmpty()) {
+            try {
+                File dest = new File(getCodeCacheDir(), "busybox");
+                if (!dest.exists() || dest.length() < 1024) {
+                    String apkPath = getApplicationInfo().sourceDir;
+                    java.util.zip.ZipFile apk = new java.util.zip.ZipFile(apkPath);
+                    java.util.zip.ZipEntry entry = apk.getEntry("lib/arm64-v8a/libexec.so");
+                    if (entry == null) entry = apk.getEntry("lib/armeabi-v7a/libexec.so");
+                    if (entry != null) {
+                        InputStream in = apk.getInputStream(entry);
+                        FileOutputStream out = new FileOutputStream(dest);
+                        byte[] buf = new byte[65536];
+                        int n;
+                        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+                        in.close();
+                        out.close();
+                    }
+                    apk.close();
+                }
+                if (dest.exists() && dest.length() > 1024) {
+                    dest.setExecutable(true, true);
+                    busyboxPath = dest.getAbsolutePath();
+                    android.util.Log.i("BusyBox", "Extracted from APK to: " + busyboxPath);
+                }
+            } catch (Exception e) {
+                android.util.Log.e("BusyBox", "APK extraction failed: " + e.getMessage());
+            }
+        }
+
+        if (busyboxPath.isEmpty()) {
+            android.util.Log.e("BusyBox", "All strategies failed — busybox unavailable");
+        }
+
         try {
-            String nativeLibDir2 = getApplicationInfo().nativeLibraryDir;
             StringBuilder sb = new StringBuilder();
             sb.append("busybox_path=").append(busyboxPath).append("\n");
-            sb.append("native_lib_dir=").append(nativeLibDir2).append("\n");
-            // List all files in native lib dir
-            File nld = new File(nativeLibDir2);
+            sb.append("native_lib_dir=").append(nativeLibDir).append("\n");
+            File nld = new File(nativeLibDir);
             if (nld.exists() && nld.isDirectory()) {
                 File[] files = nld.listFiles();
                 if (files != null) {
@@ -189,11 +240,7 @@ public class MainActivity extends Activity {
                           .append(" size=").append(ff.length())
                           .append(" exec=").append(ff.canExecute()).append("\n");
                     }
-                } else {
-                    sb.append("lib_files=null\n");
                 }
-            } else {
-                sb.append("native_lib_dir_exists=false\n");
             }
             File f = new File(getFilesDir(), "busybox_path.txt");
             java.io.FileWriter fw = new java.io.FileWriter(f, false);
@@ -201,7 +248,7 @@ public class MainActivity extends Activity {
             fw.flush();
             fw.close();
         } catch (Exception e) {
-            android.util.Log.e("BusyBox", "Failed to write path file: " + e.getMessage());
+            android.util.Log.e("BusyBox", "Failed to write diag: " + e.getMessage());
         }
     }
 
