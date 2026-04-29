@@ -195,6 +195,20 @@ def strip_html(html):
 
 
 def websearch(query, num_results=8):
+    # Primary: Jina search API
+    try:
+        import urllib.parse
+        resp = requests.get(
+            f"https://s.jina.ai/?q={urllib.parse.quote(query)}",
+            headers={"Accept": "text/plain", "User-Agent": "Mozilla/5.0"},
+            timeout=30
+        )
+        if resp.status_code == 200 and resp.text.strip():
+            return resp.text.strip()[:30000]
+    except Exception:
+        pass
+
+    # Fallback: DuckDuckGo HTML scrape
     try:
         resp = requests.get(
             "https://html.duckduckgo.com/html/",
@@ -223,6 +237,19 @@ def websearch(query, num_results=8):
 
 
 def webfetch(url):
+    # Primary: Jina Reader API (handles JS-rendered pages, returns clean markdown)
+    try:
+        resp = requests.get(
+            f"https://r.jina.ai/{url}",
+            headers={"Accept": "text/plain", "User-Agent": "Mozilla/5.0"},
+            timeout=30
+        )
+        if resp.status_code == 200 and resp.text.strip():
+            return resp.text.strip()[:30000]
+    except Exception:
+        pass
+
+    # Fallback: raw fetch + strip HTML
     try:
         resp = requests.get(
             url,
