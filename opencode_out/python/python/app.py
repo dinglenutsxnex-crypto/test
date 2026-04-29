@@ -376,6 +376,21 @@ def run_tool(name, args):
     return f"Unknown tool: {name}"
 
 
+@app.route("/ping", methods=["GET"])
+def ping():
+    return jsonify({"status": "ok"})
+
+
+@app.route("/context_info", methods=["GET"])
+def context_info():
+    """Return rough token count of current history for context display."""
+    global history
+    # Rough estimate: ~4 chars per token
+    total_chars = sum(len(str(m.get("content", ""))) for m in history)
+    estimated_tokens = total_chars // 4
+    return jsonify({"tokens_used": estimated_tokens, "messages": len(history)})
+
+
 @app.route("/")
 def home():
     return send_file(os.path.join(ROOT, "index.html"))

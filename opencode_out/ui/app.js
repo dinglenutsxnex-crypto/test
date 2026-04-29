@@ -244,6 +244,15 @@ newChatBtn.onclick = async () => {
 chatMenuBtn.onclick = (e) => {
     e.stopPropagation();
     chatMenu.classList.toggle('hidden');
+    // Issue 6: load context usage when menu opens
+    if (!chatMenu.classList.contains('hidden')) {
+        const chat = activeChat();
+        const msgCount = chat ? chat.history.length : 0;
+        const charCount = chat ? chat.history.reduce((n,m) => n + String(m.content||'').length, 0) : 0;
+        const tokEst = Math.round(charCount / 4);
+        const el = document.getElementById('context-info');
+        if (el) el.textContent = `~${tokEst.toLocaleString()} tokens · ${msgCount} msgs`;
+    }
 };
 document.addEventListener('click', () => {
     chatMenu.classList.add('hidden');
@@ -284,10 +293,20 @@ deleteChatBtn.onclick = async (e) => {
     const chat = activeChat();
     if (!chat) return;
     if (!confirm(`Delete "${chat.title}"?`)) return;
-    chats = chats.filter(c => c.id !== activeChatId);
+    const deletedId = activeChatId;
+    chats = chats.filter(c => c.id !== deletedId);
     if (chats.length) {
         activeChatId = chats[0].id;
-        await switchChat(activeChatId);
+        const nextChat = activeChat();
+        chatTitle.textContent = nextChat ? nextChat.title : 'new chat';
+        await fetch('/switch_chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: activeChatId, history: nextChat ? nextChat.history : [] })
+        });
+        await syncWorkingDirs();
+        renderFolderBar();
+        renderHistory();
     } else {
         activeChatId = null;
         chatEl.innerHTML = '';
@@ -297,7 +316,7 @@ deleteChatBtn.onclick = async (e) => {
         renderFolderBar();
     }
     renderChatList();
-    saveChats();
+    await saveChats();
 };
 
 // ── Sidebar toggle ────────────────────────────────────────────────────
@@ -354,7 +373,7 @@ function parseMarkdown(text) {
         s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
         s = s.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
         s = s.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
-        s = s.replace(/_([^_\n]+)_/g, '<em>$1</em>');
+        s = s.replace(/(^|[\s>])_([^_\n]+)_(?=[\s<,\.!?;:]|$)/gm, '$1<em>$2</em>');
         s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
         s = s.replace(/^### (.+)$/gm, '<h3>$1</h3>');
         s = s.replace(/^## (.+)$/gm,  '<h2>$1</h2>');
@@ -446,7 +465,16 @@ function sealThinking(block) {
     block.header.querySelector('.thinking-label').textContent = 'thought process';
 }
 
-function createToolPill(name, args) {
+function createToolGroup() {
+    const group = document.createElement('div');
+    group.className = 'tool-group';
+    chatEl.appendChild(group);
+    scrollBottom();
+    return group;
+}
+
+function createToolPill(name, args, group) {
+    const container = group || chatEl;
     const div = document.createElement('div');
     div.className = 'tool-pill';
     let icon, label;
@@ -473,7 +501,7 @@ function createToolPill(name, args) {
         label = `running&nbsp;<em>${escHtml(name)}</em>`;
     }
     div.innerHTML = `<span class="tool-spinner"></span>${icon}<span>${label}</span>`;
-    chatEl.appendChild(div);
+    container.appendChild(div);
     scrollBottom();
     return div;
 }
@@ -526,11 +554,18 @@ async function send() {
     setLoading(true);
 
     let thinkingBlock = null;
+    let thinkingIndicator = null;
     let assistantDiv  = null;
     let toolPill      = null;
+    let toolGroup     = null;
     let assistantText = '';
 
     const chat = activeChat();
+
+    // Issue 5: keep-alive ping every 20s to prevent connection timeout
+    let keepAliveTimer = setInterval(async () => {
+        try { await fetch('/ping', { method: 'GET' }); } catch {}
+    }, 20000);
 
     try {
         const resp = await fetch('/chat', {
@@ -561,13 +596,19 @@ async function send() {
                 switch (ev.type) {
                     case 'thinking': {
                         if (!thinkingBlock) thinkingBlock = createThinkingBlock();
+                        // Issue 4: show active thinking indicator in the thinking header
+                        if (!thinkingBlock._indicator) {
+                            thinkingBlock._indicator = true;
+                            thinkingBlock.header.querySelector('.thinking-label').innerHTML =
+                                'thinking <span class="thinking-dots"><span></span><span></span><span></span></span>';
+                        }
                         thinkingBlock.body.textContent += ev.text;
                         scrollBottom();
                         break;
                     }
                     case 'text': {
                         if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
-                        if (toolPill) { toolPill.classList.add('done'); toolPill = null; }
+                        if (toolPill) { toolPill.classList.add('done'); toolPill = null; toolGroup = null; }
                         if (!assistantDiv) { assistantText = ''; assistantDiv = createAssistantShell(); }
                         assistantText += ev.text;
                         assistantDiv.innerHTML = `<span class="msg-prefix">assistant</span>` + parseMarkdown(assistantText) + '<span class="cursor"></span>';
@@ -577,8 +618,10 @@ async function send() {
                     case 'tool_use': {
                         if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
                         if (assistantDiv) { sealAssistant(assistantDiv, assistantText); assistantDiv = null; assistantText = ''; }
+                        // Issue 3: group tools together in a single container block
+                        if (!toolGroup) toolGroup = createToolGroup();
                         if (toolPill) toolPill.classList.add('done');
-                        toolPill = createToolPill(ev.name, ev.args);
+                        toolPill = createToolPill(ev.name, ev.args, toolGroup);
                         break;
                     }
                     case 'tool_done': {
@@ -607,7 +650,7 @@ async function send() {
                     case 'done': {
                         if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
                         if (assistantDiv)  { sealAssistant(assistantDiv, assistantText); assistantDiv = null; }
-                        if (toolPill)      { toolPill.classList.add('done'); toolPill = null; }
+                        if (toolPill)      { toolPill.classList.add('done'); toolPill = null; toolGroup = null; }
                         break;
                     }
                 }
@@ -619,11 +662,13 @@ async function send() {
         if (toolPill)      toolPill.classList.add('done');
 
     } catch (e) {
+        clearInterval(keepAliveTimer);
         const d = assistantDiv || createAssistantShell();
         d.classList.remove('streaming');
         d.innerHTML = `<span class="msg-prefix">assistant</span><span class="error-msg">⚠ ${escHtml(e.message)}</span>`;
     }
 
+    clearInterval(keepAliveTimer);
     sending = false;
     setLoading(false);
     input.focus();

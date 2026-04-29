@@ -166,7 +166,7 @@ body { display: flex; }
 .thinking-body { background: rgba(23,28,43,.9); border-left: 2px solid var(--border-light); color: #8eaacc; font-size: 13px; font-family: var(--font); line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 0; overflow: hidden; transition: max-height .22s ease, padding .18s ease; padding: 0 10px; margin-top: 4px; }
 .thinking-body.open { max-height: 220px; overflow-y: auto; padding: 8px 10px; }
 
-.tool-pill { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); font-family: var(--font); padding: 3px 18px; animation: fadeIn .14s ease both; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tool-pill { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); font-family: var(--font); padding: 4px 18px; animation: fadeIn .14s ease both; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 1px 0; }
 .tool-pill em { font-style: normal; color: var(--cyan); }
 .tool-pill.done { opacity: .3; }
 .tool-spinner { width: 10px; height: 10px; border: 1.5px solid var(--border-light); border-top-color: var(--accent-light); border-radius: 50%; animation: spin .65s linear infinite; flex-shrink: 0; }
@@ -317,3 +317,55 @@ body { display: flex; }
 .modal-btn.cancel:hover { color: var(--text-muted); border-color: var(--text-dim); }
 .modal-btn.confirm { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 2px 10px rgba(74,143,255,.3); }
 .modal-btn.confirm:hover { background: var(--accent-hover); }
+
+/* ─── Tool group (issue 3) ───────────────────────────────── */
+.tool-group {
+    display: flex;
+    flex-direction: column;
+    padding: 6px 0 4px;
+    margin: 2px 0;
+    border-left: 2px solid var(--border-light);
+    margin-left: 18px;
+}
+
+/* ─── Thinking dots animation (issue 4) ─────────────────── */
+.thinking-dots {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    vertical-align: middle;
+    margin-left: 4px;
+}
+.thinking-dots span {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.4;
+    animation: thinkingDot 1.2s ease-in-out infinite;
+}
+.thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes thinkingDot {
+    0%, 80%, 100% { opacity: 0.2; transform: scale(0.85); }
+    40% { opacity: 1; transform: scale(1.2); }
+}
+
+/* ─── Context info in chat menu (issue 6) ───────────────── */
+.chat-menu-context {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px 6px;
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: var(--font);
+    white-space: nowrap;
+    opacity: 0.7;
+}
+.chat-menu-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 2px 0;
+    opacity: 0.5;
+}
