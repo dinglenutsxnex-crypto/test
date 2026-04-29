@@ -409,36 +409,30 @@ def tool_exec_busybox(command, cwd=None):
 
     try:
         bb = busybox_path
-        # Rewrite the command so every unknown applet is prefixed with the busybox path.
-        # busybox supports: `busybox <applet> <args>` regardless of its filename.
-        # We run via `busybox sh` and inject a shell function for every applet
-        # that forwards to `busybox <applet>`. No symlinks, no filesystem tricks.
-        applets = [
-            "ls","cat","grep","find","cp","mv","rm","mkdir","chmod","chown",
-            "sed","awk","head","tail","wc","ps","df","du","tar","wget",
-            "curl","kill","date","pwd","touch","stat","sort","uniq","cut","tr",
-            "xargs","sleep","id","whoami","which","basename","dirname",
-            "readlink","realpath","md5sum","sha256sum","strings","hexdump",
-            "dd","sync","ping","netstat","ifconfig","uname","free","uptime",
-            "pgrep","pkill","killall","vi","diff","patch","zip","unzip",
-            "gzip","gunzip","bzip2","bunzip2","lzma","unlzma","xz","unxz",
-        ]
-        # Assign bb path to a shell var so special chars in the path don't break function defs
-        fn_block = "_BB=\"" + bb + "\"\n"
-        fn_block += "\n".join(
-            f"{a}() {{ \"$_BB\" {a} \"$@\"; }}" for a in applets
-        )
-        full_cmd = fn_block + "\n" + command
-
-        bb_env = {**os.environ, "PATH": "/system/bin:/system/xbin:/vendor/bin"}
-        result = subprocess.run(
-            [bb, "sh", "-c", full_cmd],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd=safe_cwd,
-            env=bb_env
-        )
+        # Parse the command string into tokens and prepend busybox path.
+        # e.g. "ls -la /sdcard" -> [bb, "ls", "-la", "/sdcard"]
+        # For pipes/redirects/multi-commands we fall back to bb sh with env var.
+        import shlex
+        needs_shell = any(c in command for c in ('|', '>', '<', ';', '&&', '||', '$', '`', '\n'))
+        if needs_shell:
+            # Set _BB env var and rewrite command to use it
+            bb_env = {**os.environ, "BB": bb, "PATH": "/system/bin:/system/xbin:/vendor/bin"}
+            # Prefix every plain word that's a known command with $BB
+            full_cmd = "BB=\"" + bb + "\"; " + command.replace("ls ", "$BB ls ").replace("cat ", "$BB cat ").replace("grep ", "$BB grep ").replace("find ", "$BB find ").replace("sed ", "$BB sed ").replace("awk ", "$BB awk ").replace("ps ", "$BB ps ").replace("df ", "$BB df ").replace("du ", "$BB du ")
+            result = subprocess.run(
+                [bb, "sh", "-c", full_cmd],
+                capture_output=True, text=True, timeout=120, cwd=safe_cwd, env=bb_env
+            )
+        else:
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                tokens = command.split()
+            bb_env = {**os.environ, "PATH": "/system/bin:/system/xbin:/vendor/bin"}
+            result = subprocess.run(
+                [bb] + tokens,
+                capture_output=True, text=True, timeout=120, cwd=safe_cwd, env=bb_env
+            )
         output = ""
         if result.stdout:
             output += result.stdout
