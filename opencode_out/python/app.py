@@ -408,15 +408,27 @@ def tool_exec_busybox(command, cwd=None):
 
     try:
         bb = busybox_path
-        bb_env = {**os.environ, "PATH": os.path.dirname(bb) + ":/system/bin:/system/xbin"}
-        # busybox dispatches applets via argv0, so "ls" only works if the binary IS named ls.
-        # Since it's named libexec.so, we must invoke it as: busybox <applet> <args>
-        # We rewrite the shell command so every token is prefixed — simplest: run via
-        # `busybox sh` but with a BUSYBOX env var and a wrapper that aliases common cmds.
-        alias_block = f"alias ls=\'{bb} ls\' grep=\'{bb} grep\' cat=\'{bb} cat\' find=\'{bb} find\' cp=\'{bb} cp\' mv=\'{bb} mv\' rm=\'{bb} rm\' mkdir=\'{bb} mkdir\' chmod=\'{bb} chmod\' echo=\'{bb} echo\' sed=\'{bb} sed\' awk=\'{bb} awk\' head=\'{bb} head\' tail=\'{bb} tail\' wc=\'{bb} wc\' ps=\'{bb} ps\' df=\'{bb} df\' du=\'{bb} du\' tar=\'{bb} tar\' wget=\'{bb} wget\' curl=\'{bb} curl\' kill=\'{bb} kill\' date=\'{bb} date\' pwd=\'{bb} pwd\' env=\'{bb} env\' touch=\'{bb} touch\' stat=\'{bb} stat\' sort=\'{bb} sort\' uniq=\'{bb} uniq\' cut=\'{bb} cut\' tr=\'{bb} tr\';"
-        full_cmd = alias_block + " " + command
+        link_dir = "/data/data/com.opencode.app/files/bblinks"
+        os.makedirs(link_dir, exist_ok=True)
+        applets = [
+            "ls","cat","grep","find","cp","mv","rm","mkdir","chmod","chown",
+            "echo","sed","awk","head","tail","wc","ps","df","du","tar","wget",
+            "curl","kill","date","pwd","touch","stat","sort","uniq","cut","tr",
+            "xargs","env","sleep","id","whoami","which","basename","dirname",
+            "readlink","realpath","md5sum","sha256sum","strings","hexdump",
+            "dd","sync","ping","netstat","ifconfig","uname","free","uptime",
+            "pgrep","pkill","killall","sh","ash"
+        ]
+        for applet in applets:
+            link = os.path.join(link_dir, applet)
+            if not os.path.exists(link):
+                try:
+                    os.symlink(bb, link)
+                except Exception:
+                    pass
+        bb_env = {**os.environ, "PATH": link_dir + ":/system/bin:/system/xbin"}
         result = subprocess.run(
-            [bb, "sh", "-c", full_cmd],
+            [os.path.join(link_dir, "sh"), "-c", command],
             capture_output=True,
             text=True,
             timeout=30,
