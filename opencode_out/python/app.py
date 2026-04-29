@@ -5,7 +5,7 @@ import glob as glob_module
 import fnmatch
 import requests
 from flask import Flask, send_file, request, jsonify, send_from_directory, Response, stream_with_context
-from python.config import API_URL, MODEL, HOST, PORT, WORKING_DIR
+from python.config import API_URL, MODEL, HOST, PORT, WORKING_DIR, MAX_TOKENS, COMPACTION_THRESHOLD
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 app = Flask(__name__, template_folder=ROOT, static_folder=ROOT + '/ui')
@@ -14,6 +14,26 @@ history = []
 working_dir = WORKING_DIR   # kept for compat; primary dirs below
 working_dirs = []           # list of active working dirs (multiple folders)
 current_chat_id = None
+
+SUMMARY_TEMPLATE = """Create a concise summary. Output exactly:
+
+## Goal
+- [single-sentence task]
+
+## Progress
+- [completed work]
+- [current work]
+
+## Next Steps
+- [ordered actions]
+
+## Key Context
+- [important facts, errors, or "(none)"]
+
+Do not include empty sections."""
+
+def estimate_tokens(text):
+    return len(text) // 4
 
 # -- Storage dir (external storage ~/opencode or app internal as fallback) --
 def get_opencode_dir():
@@ -474,6 +494,10 @@ def set_working_dir():
         working_dir = ""
         return jsonify({"status": "ok", "working_dir": ""})
 
+@app.route("/ping", methods=["GET"])
+def ping():
+    return jsonify({"status": "ok"})
+
 @app.route("/ls", methods=["GET"])
 def list_dir():
     global working_dir
@@ -524,22 +548,57 @@ def chat():
         system_msg = {"role": "system", "content": "No working directory set. Ask user to select a project folder first."}
     msgs_with_sys = [system_msg] + list(history)
 
+    total_tokens = sum(estimate_tokens(json.dumps(m)) for m in msgs_with_sys)
+    needs_compaction = total_tokens > COMPACTION_THRESHOLD
+    previous_summary = None
+
     def generate():
-        global history
+        global history, previous_summary
+        import time
         messages = list(msgs_with_sys)
         full_content = ""
+        last_heartbeat = time.time()
 
-        for _round in range(6):
+        if needs_compaction and previous_summary:
+            context = [f"--- Recent conversation (summary) ---\n{previous_summary}"]
+            compact_prompt = "Update the summary with new progress. Keep all sections. Be concise."
+        elif needs_compaction:
+            context = []
+            compact_prompt = "Create a new summary from the conversation."
+        else:
+            context = []
+
+        if needs_compaction and context:
+            summary_payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": SUMMARY_TEMPLATE},
+                    {"role": "user", "content": compact_prompt + "\n\n" + "\n\n".join(context + [f"{m['role']}: {m['content'][:2000]}" for m in messages[-10:]])}
+                ],
+                "max_tokens": 2000
+            }
+            try:
+                summary_resp = requests.post(API_URL, json=summary_payload, timeout=60)
+                if summary_resp.status_code == 200:
+                    summary_txt = summary_resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                    if summary_txt:
+                        previous_summary = summary_txt.strip()
+                        messages = [{"role": "system", "content": f"Previous summary:\n{summary_txt}\n\nRecent context above is summarized."}] + messages[-4:]
+            except:
+                pass
+
+        for _round in range(1000):
             payload = {
                 "model": model,
                 "messages": messages,
                 "stream": True,
                 "tools": TOOLS,
-                "tool_choice": "auto"
+                "tool_choice": "auto",
+                "max_tokens": MAX_TOKENS
             }
 
             try:
-                api_resp = requests.post(API_URL, json=payload, stream=True, timeout=180)
+                api_resp = requests.post(API_URL, json=payload, stream=True, timeout=600)
                 api_resp.raise_for_status()
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
@@ -551,6 +610,9 @@ def chat():
             for raw in api_resp.iter_lines():
                 if not raw:
                     continue
+                if time.time() - last_heartbeat > 8:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                    last_heartbeat = time.time()
                 line = raw.decode("utf-8", errors="replace")
                 if not line.startswith("data: "):
                     continue
