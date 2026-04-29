@@ -5,7 +5,13 @@ import glob as glob_module
 import fnmatch
 import requests
 from flask import Flask, send_file, request, jsonify, send_from_directory, Response, stream_with_context
-from python.config import API_URL, MODEL, HOST, PORT, WORKING_DIR, MAX_TOKENS
+from python.config import API_URL, MODEL, HOST, PORT, WORKING_DIR, MAX_TOKENS, COMPACTION_THRESHOLD
+from python.compaction import (
+    compact_messages,
+    build_compacted_messages_for_api,
+    estimate_messages_tokens,
+    is_overflow,
+)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 app = Flask(__name__, template_folder=ROOT, static_folder=ROOT + '/ui')
@@ -14,26 +20,7 @@ history = []
 working_dir = WORKING_DIR   # kept for compat; primary dirs below
 working_dirs = []           # list of active working dirs (multiple folders)
 current_chat_id = None
-
-SUMMARY_TEMPLATE = """Create a concise summary. Output exactly:
-
-## Goal
-- [single-sentence task]
-
-## Progress
-- [completed work]
-- [current work]
-
-## Next Steps
-- [ordered actions]
-
-## Key Context
-- [important facts, errors, or "(none)"]
-
-Do not include empty sections."""
-
-def estimate_tokens(text):
-    return len(text) // 4
+previous_summary = None     # persists the last compaction summary across requests
 
 # -- Storage dir (external storage ~/opencode or app internal as fallback) --
 def get_opencode_dir():
@@ -548,16 +535,29 @@ def chat():
         system_msg = {"role": "system", "content": "No working directory set. Ask user to select a project folder first."}
     msgs_with_sys = [system_msg] + list(history)
 
-    total_tokens = sum(estimate_tokens(json.dumps(m)) for m in msgs_with_sys)
-    needs_compaction = total_tokens > COMPACTION_THRESHOLD
-    previous_summary = None
-
     def generate():
-        global history
+        global history, previous_summary
         import time
-        messages = list(msgs_with_sys)
         full_content = ""
         last_heartbeat = time.time()
+
+        # ── Context compaction ────────────────────────────────────────────────
+        # COMPACTION_THRESHOLD is used as the context_limit for mobile budgets.
+        # MAX_TOKENS is treated as the max output size.
+        compacted, previous_summary, did_compact = compact_messages(
+            messages=list(history),
+            system_messages=[system_msg],
+            api_url=API_URL,
+            model=model,
+            previous_summary=previous_summary,
+            context_limit=COMPACTION_THRESHOLD,
+            max_output_tokens=MAX_TOKENS,
+        )
+        if did_compact:
+            yield f"data: {json.dumps({'type': 'compaction', 'text': 'Context compacted.'})}\n\n"
+
+        messages = [system_msg] + build_compacted_messages_for_api(compacted)
+        # ─────────────────────────────────────────────────────────────────────
 
         for _round in range(1000):
             payload = {
@@ -676,8 +676,9 @@ def chat():
 
 @app.route("/clear", methods=["POST"])
 def clear():
-    global history
+    global history, previous_summary
     history = []
+    previous_summary = None
     return jsonify({"status": "cleared"})
 
 
@@ -695,10 +696,11 @@ def set_working_dirs():
 
 @app.route("/switch_chat", methods=["POST"])
 def switch_chat():
-    global history, current_chat_id
+    global history, current_chat_id, previous_summary
     data = request.json
     current_chat_id = data.get("chat_id")
     history = data.get("history", [])
+    previous_summary = data.get("summary", None)  # restore saved summary if present
     return jsonify({"status": "ok"})
 
 
