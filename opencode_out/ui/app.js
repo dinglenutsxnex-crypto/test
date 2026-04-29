@@ -248,6 +248,7 @@ chatMenuBtn.onclick = (e) => {
 document.addEventListener('click', () => {
     chatMenu.classList.add('hidden');
     modelDropdown.classList.add('hidden');
+    modelBtn.classList.remove('open');
 });
 
 renameChatBtn.onclick = (e) => {
@@ -305,7 +306,8 @@ menuBtn.onclick = () => sidebar.classList.toggle('collapsed');
 // ── Model selector ────────────────────────────────────────────────────
 modelBtn.onclick = (e) => {
     e.stopPropagation();
-    modelDropdown.classList.toggle('hidden');
+    const isHidden = modelDropdown.classList.toggle('hidden');
+    modelBtn.classList.toggle('open', !isHidden);
 };
 modelDropdown.querySelectorAll('.model-option').forEach(btn => {
     btn.onclick = (e) => {
@@ -315,6 +317,7 @@ modelDropdown.querySelectorAll('.model-option').forEach(btn => {
         modelDropdown.querySelectorAll('.model-option').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         modelDropdown.classList.add('hidden');
+        modelBtn.classList.remove('open');
     };
 });
 

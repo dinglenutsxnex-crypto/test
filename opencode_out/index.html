@@ -20,7 +20,7 @@
     <div id="main">
         <div id="header">
             <button id="menu-btn" class="menu-btn">
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
             </button>
             <div class="header-center">
                 <span id="chat-title" class="chat-title">new chat</span>
@@ -47,7 +47,6 @@
         </div>
 
         <div id="folder-bar" class="folder-bar hidden"></div>
-
         <div id="chat"></div>
 
         <div id="input-area">
@@ -55,26 +54,29 @@
             <textarea id="input" placeholder="send a message..." rows="1"></textarea>
             <button id="send"></button>
         </div>
+
         <div id="model-bar">
-            <span class="model-bar-label">model:</span>
-            <button id="model-btn" class="model-btn">
-                <span id="model-label">minimax-m2.5</span>
-                <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-            </button>
-            <div id="model-dropdown" class="model-dropdown hidden">
-                <div class="model-dropdown-label">Free models</div>
-                <button class="model-option active" data-model="minimax-m2.5-free" data-label="minimax-m2.5">minimax-m2.5</button>
-                <button class="model-option" data-model="kimi-k2.5-free" data-label="kimi-k2.5">kimi-k2.5</button>
-                <button class="model-option" data-model="glm-4.7-free" data-label="glm-4.7">glm-4.7</button>
-                <button class="model-option" data-model="big-pickle" data-label="big-pickle">big-pickle</button>
-                <button class="model-option" data-model="gpt-5-nano" data-label="gpt-5-nano">gpt-5-nano</button>
-                <button class="model-option" data-model="mimo-v2-pro-free" data-label="mimo-v2-pro">mimo-v2-pro</button>
-                <button class="model-option" data-model="nemotron-3-super-free" data-label="nemotron-3-super">nemotron-3-super</button>
+            <span class="model-bar-label">model</span>
+            <div class="model-selector-wrap">
+                <button id="model-btn" class="model-btn">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+                    <span id="model-label">minimax-m2.5</span>
+                    <svg class="model-chevron" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div id="model-dropdown" class="model-dropdown hidden">
+                    <div class="model-dropdown-label">Free models</div>
+                    <button class="model-option active" data-model="minimax-m2.5-free" data-label="minimax-m2.5">minimax-m2.5</button>
+                    <button class="model-option" data-model="kimi-k2.5-free" data-label="kimi-k2.5">kimi-k2.5</button>
+                    <button class="model-option" data-model="glm-4.7-free" data-label="glm-4.7">glm-4.7</button>
+                    <button class="model-option" data-model="big-pickle" data-label="big-pickle">big-pickle</button>
+                    <button class="model-option" data-model="gpt-5-nano" data-label="gpt-5-nano">gpt-5-nano</button>
+                    <button class="model-option" data-model="mimo-v2-pro-free" data-label="mimo-v2-pro">mimo-v2-pro</button>
+                    <button class="model-option" data-model="nemotron-3-super-free" data-label="nemotron-3-super">nemotron-3-super</button>
+                </div>
             </div>
         </div>
     </div>
 
-    <!-- Rename modal -->
     <div id="rename-modal" class="modal-overlay hidden">
         <div class="modal">
             <div class="modal-title">Rename chat</div>
