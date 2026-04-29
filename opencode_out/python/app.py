@@ -350,21 +350,18 @@ def tool_write(content, filePath):
         return f"Write error: {e}"
 
 
-def _find_busybox():
-    """Locate libexec.so using Android API (Chaquopy), then glob fallback."""
-    # 1. Ask Android directly — most reliable, works on all versions
-    try:
-        from com.chaquo.python import Python as _Py
-        from android.content import Context as _Ctx
-        ctx = _Py.getPlatform().getApplication()
-        native_lib_dir = ctx.getApplicationInfo().nativeLibraryDir
-        candidate = os.path.join(native_lib_dir, "libexec.so")
-        if os.path.isfile(candidate):
-            return candidate
-    except Exception:
-        pass
+# Set by Java (MainActivity.startFlaskServer) before Flask starts.
+# Falls back to glob scan if somehow not set.
+BUSYBOX_PATH = ""
 
-    # 2. Glob fallback — covers all known Android path layouts
+
+def _find_busybox():
+    """Return the busybox path injected by Java, or scan as fallback."""
+    # Primary: Java injects this directly before starting Flask
+    if BUSYBOX_PATH and os.path.isfile(BUSYBOX_PATH):
+        return BUSYBOX_PATH
+
+    # Fallback: glob the native lib dir (covers all Android path layouts)
     import glob as _glob
     pkg = "com.opencode.app"
     patterns = [
@@ -374,7 +371,7 @@ def _find_busybox():
     ]
     for pattern in patterns:
         matches = _glob.glob(pattern)
-        if matches:
+        if matches and os.path.isfile(matches[0]):
             return matches[0]
 
     return None
@@ -388,11 +385,9 @@ def tool_exec_busybox(command, cwd=None):
 
     if not busybox_path:
         return (
-            "BusyBox binary not found.\n"
-            "It should be installed as libexec.so in the app native library dir.\n"
-            "Make sure: (1) libexec.so is in jniLibs/arm64-v8a/, "
-            "(2) the app was reinstalled after that change, "
-            "(3) the app was launched at least once so Java writes busybox_path.txt."
+            "BusyBox binary not found. "
+            "libexec.so must be in jniLibs/arm64-v8a/ and the app must be reinstalled. "
+            f"BUSYBOX_PATH='{BUSYBOX_PATH}'"
         )
 
     if not os.access(busybox_path, os.X_OK):
