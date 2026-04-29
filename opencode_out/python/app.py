@@ -1,5 +1,4 @@
 import os
-import time
 import json
 import re
 import glob as glob_module
@@ -176,21 +175,6 @@ TOOLS = [
                 "required": ["filePath", "oldString", "newString"]
             }
         }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "exec_busybox",
-            "description": "Execute a shell command using BusyBox on the Android device. Provides access to 300+ Unix commands: ls, cp, mv, rm, mkdir, chmod, grep, sed, awk, cat, head, tail, wc, wget, curl, ping, ps, kill, df, du, tar, gzip, zip and many more. Use this for file operations, text processing, system inspection, and general shell scripting.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "The shell command to run (e.g., 'ls -la /sdcard', 'df -h', 'ps aux')"},
-                    "cwd": {"type": "string", "description": "Working directory for the command (optional, defaults to app files dir)"}
-                },
-                "required": ["command"]
-            }
-        }
     }
 ]
 
@@ -351,102 +335,6 @@ def tool_write(content, filePath):
         return f"Write error: {e}"
 
 
-def _read_busybox_diag():
-    """Read the diagnostic file Java wrote to filesDir."""
-    pkg = "com.opencode.app"
-    for path_file in [
-        f"/data/user/0/{pkg}/files/busybox_path.txt",
-        f"/data/data/{pkg}/files/busybox_path.txt",
-    ]:
-        try:
-            with open(path_file, "r") as f:
-                result = {}
-                for line in f.read().splitlines():
-                    if "=" in line:
-                        k, v = line.split("=", 1)
-                        result[k] = v
-                return result
-        except Exception:
-            continue
-    return {}
-
-
-def _find_busybox():
-    """Read busybox path from diagnostic file Java wrote before Python started."""
-    diag = _read_busybox_diag()
-    path = diag.get("busybox_path", "").strip()
-    if path and os.path.isfile(path):
-        return path
-    return None
-
-
-def tool_exec_busybox(command, cwd=None):
-    """Execute a command using the bundled BusyBox binary."""
-    import subprocess
-
-    busybox_path = _find_busybox()
-
-    if not busybox_path:
-        return (
-            "BusyBox not found. Visit http://localhost:5000/debug_busybox for diagnostics."
-        )
-
-    if not os.access(busybox_path, os.X_OK):
-        try:
-            os.chmod(busybox_path, 0o755)
-        except Exception as e:
-            return (
-                f"BusyBox found at {busybox_path} but is not executable and chmod failed: {e}\n"
-                "The native library dir should always be exec-allowed — "
-                "verify libexec.so is in jniLibs/arm64-v8a/ and the app was freshly installed."
-            )
-
-    safe_cwd = "/data/data/com.opencode.app/files"
-    if cwd and os.path.isdir(cwd):
-        safe_cwd = cwd
-    elif not os.path.isdir(safe_cwd):
-        safe_cwd = "/data/local/tmp"
-
-    try:
-        bb = busybox_path
-        # Parse the command string into tokens and prepend busybox path.
-        # e.g. "ls -la /sdcard" -> [bb, "ls", "-la", "/sdcard"]
-        # For pipes/redirects/multi-commands we fall back to bb sh with env var.
-        import shlex
-        needs_shell = any(c in command for c in ('|', '>', '<', ';', '&&', '||', '$', '`', '\n'))
-        if needs_shell:
-            # Set _BB env var and rewrite command to use it
-            bb_env = {**os.environ, "BB": bb, "PATH": "/system/bin:/system/xbin:/vendor/bin"}
-            # Prefix every plain word that's a known command with $BB
-            full_cmd = "BB=\"" + bb + "\"; " + command.replace("ls ", "$BB ls ").replace("cat ", "$BB cat ").replace("grep ", "$BB grep ").replace("find ", "$BB find ").replace("sed ", "$BB sed ").replace("awk ", "$BB awk ").replace("ps ", "$BB ps ").replace("df ", "$BB df ").replace("du ", "$BB du ")
-            result = subprocess.run(
-                [bb, "sh", "-c", full_cmd],
-                capture_output=True, text=True, timeout=120, cwd=safe_cwd, env=bb_env
-            )
-        else:
-            try:
-                tokens = shlex.split(command)
-            except ValueError:
-                tokens = command.split()
-            bb_env = {**os.environ, "PATH": "/system/bin:/system/xbin:/vendor/bin"}
-            result = subprocess.run(
-                [bb] + tokens,
-                capture_output=True, text=True, timeout=120, cwd=safe_cwd, env=bb_env
-            )
-        output = ""
-        if result.stdout:
-            output += result.stdout
-        if result.stderr:
-            output += result.stderr
-        if result.returncode != 0:
-            output += f"\n[exit code: {result.returncode}]"
-        return output.strip() if output.strip() else f"[Command completed with exit code {result.returncode}]"
-    except subprocess.TimeoutExpired:
-        return "Command timed out after 30 seconds."
-    except Exception as e:
-        return f"Execution error: {e}"
-
-
 def tool_edit(filePath, oldString, newString, replaceAll=False):
     global working_dir
     if not working_dir:
@@ -489,8 +377,6 @@ def run_tool(name, args):
         return tool_write(args.get("content", ""), args.get("filePath", ""))
     elif name == "edit":
         return tool_edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), args.get("replaceAll", False))
-    elif name == "exec_busybox":
-        return tool_exec_busybox(args.get("command", ""), args.get("cwd"))
     return f"Unknown tool: {name}"
 
 
@@ -580,13 +466,12 @@ def chat():
                 "model": model,
                 "messages": messages,
                 "stream": True,
-                "max_tokens": 8192,
                 "tools": TOOLS,
                 "tool_choice": "auto"
             }
 
             try:
-                api_resp = requests.post(API_URL, json=payload, stream=True, timeout=300)
+                api_resp = requests.post(API_URL, json=payload, stream=True, timeout=180)
                 api_resp.raise_for_status()
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
@@ -594,13 +479,8 @@ def chat():
 
             tool_calls_acc = {}
             round_content = ""
-            last_ping = time.time()
 
             for raw in api_resp.iter_lines():
-                now = time.time()
-                if now - last_ping > 5:
-                    yield ": ping\n\n"
-                    last_ping = now
                 if not raw:
                     continue
                 line = raw.decode("utf-8", errors="replace")
@@ -787,39 +667,6 @@ def delete_chat():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
-
-@app.route("/exec_busybox", methods=["POST"])
-def exec_busybox_route():
-    """HTTP endpoint to run a BusyBox command directly."""
-    data = request.json or {}
-    command = data.get("command", "")
-    cwd = data.get("cwd")
-    if not command:
-        return jsonify({"status": "error", "message": "No command provided"})
-    result = tool_exec_busybox(command, cwd)
-    return jsonify({"status": "ok", "output": result})
-
-
-
-
-@app.route("/debug_busybox", methods=["GET"])
-def debug_busybox():
-    """Show full Java diagnostic: nativeLibDir, files in it, and busybox path."""
-    diag = _read_busybox_diag()
-    result = {"java_diag": diag, "finder_result": _find_busybox()}
-    # Check if the binary path exists
-    bp = diag.get("busybox_path", "").strip()
-    if bp:
-        result["binary_exists"] = os.path.isfile(bp)
-        result["binary_executable"] = os.access(bp, os.X_OK) if os.path.isfile(bp) else False
-    # List native lib dir if we know it
-    nld = diag.get("native_lib_dir", "").strip()
-    if nld and os.path.isdir(nld):
-        try:
-            result["native_lib_dir_contents"] = os.listdir(nld)
-        except Exception as e:
-            result["native_lib_dir_error"] = str(e)
-    return jsonify(result)
 
 if __name__ == "__main__":
     print(f"OpenCode — http://localhost:{PORT}")

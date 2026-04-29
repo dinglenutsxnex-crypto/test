@@ -31,12 +31,6 @@ android {
         debug { debuggable true }
     }
 
-    packagingOptions {
-        jniLibs {
-            useLegacyPackaging true
-        }
-    }
-
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
@@ -47,7 +41,6 @@ android {
     sourceSets {
         main {
             python.srcDirs = ["../../opencode_out"]
-            jniLibs.srcDirs = ["src/main/jniLibs"]
         }
     }
 }
