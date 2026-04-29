@@ -551,8 +551,9 @@ def tool_shell(command, cwd=None):
         return "Error: toybox binary not available."
 
     run_cwd = cwd or working_dir or None
+    if run_cwd and not os.path.isdir(run_cwd):
+        run_cwd = None
 
-    wrapped = f"{toybox} sh -c {repr(command)}"
     try:
         result = subprocess.run(
             [toybox, "sh", "-c", command],
