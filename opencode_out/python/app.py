@@ -45,8 +45,12 @@ def get_opencode_dir():
     return d
 
 
-def chats_file():
-    return os.path.join(get_opencode_dir(), "chats.json")
+def chats_index_file():
+    return os.path.join(get_opencode_dir(), "index.json")
+
+def chat_file(chat_id):
+    safe = re.sub(r'[^a-zA-Z0-9_\-]', '_', chat_id)
+    return os.path.join(get_opencode_dir(), f"{safe}.json")
 
 def resolve_path(path, cwd=None):
     if not cwd:
@@ -580,11 +584,11 @@ def set_working_dirs():
     global working_dirs, working_dir
     data = request.json
     dirs = data.get("working_dirs", [])
-    # Validate each dir
     valid = [d for d in dirs if d and os.path.isdir(d)]
+    invalid = [d for d in dirs if d and not os.path.isdir(d)]
     working_dirs = valid
     working_dir = valid[0] if valid else ""
-    return jsonify({"status": "ok", "working_dirs": working_dirs})
+    return jsonify({"status": "ok", "working_dirs": working_dirs, "invalid_dirs": invalid})
 
 
 @app.route("/switch_chat", methods=["POST"])
@@ -603,10 +607,26 @@ def storage_dir():
 
 @app.route("/save_chats", methods=["POST"])
 def save_chats():
+    """Save all chats: index.json for ordering + one file per chat."""
     data = request.json
+    chats = data.get("chats", [])
+    active_id = data.get("activeChatId")
     try:
-        with open(chats_file(), "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        odir = get_opencode_dir()
+        # Write each chat to its own file
+        for chat in chats:
+            cid = chat.get("id", "")
+            if not cid:
+                continue
+            with open(chat_file(cid), "w", encoding="utf-8") as f:
+                json.dump(chat, f, ensure_ascii=False, indent=2)
+        # Write index (just ids + titles for listing, no history)
+        index = {
+            "activeChatId": active_id,
+            "chatIds": [c["id"] for c in chats if c.get("id")]
+        }
+        with open(chats_index_file(), "w", encoding="utf-8") as f:
+            json.dump(index, f, ensure_ascii=False, indent=2)
         return jsonify({"status": "ok"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
@@ -614,14 +634,38 @@ def save_chats():
 
 @app.route("/load_chats", methods=["GET"])
 def load_chats():
+    """Load all chats from per-chat files via index."""
     try:
-        with open(chats_file(), "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return jsonify(data)
+        with open(chats_index_file(), "r", encoding="utf-8") as f:
+            index = json.load(f)
+        chats = []
+        for cid in index.get("chatIds", []):
+            try:
+                with open(chat_file(cid), "r", encoding="utf-8") as f:
+                    chats.append(json.load(f))
+            except Exception:
+                pass  # Skip missing/corrupt chat files gracefully
+        return jsonify({"chats": chats, "activeChatId": index.get("activeChatId")})
     except FileNotFoundError:
         return jsonify({"chats": [], "activeChatId": None})
     except Exception as e:
         return jsonify({"chats": [], "activeChatId": None, "error": str(e)})
+
+
+@app.route("/delete_chat", methods=["POST"])
+def delete_chat():
+    """Delete a single chat's JSON file."""
+    data = request.json
+    cid = data.get("chat_id", "")
+    if not cid:
+        return jsonify({"status": "error", "message": "No chat_id"})
+    try:
+        path = chat_file(cid)
+        if os.path.isfile(path):
+            os.remove(path)
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
 
 
 if __name__ == "__main__":

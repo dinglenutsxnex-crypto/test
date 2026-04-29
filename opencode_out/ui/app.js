@@ -117,11 +117,32 @@ function renderFolderBar() {
 async function syncWorkingDirs() {
     const chat = activeChat();
     const dirs = chat ? chat.workingDirs : [];
-    await fetch('/working_dirs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ working_dirs: dirs })
-    });
+    try {
+        const resp = await fetch('/working_dirs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ working_dirs: dirs })
+        });
+        const data = await resp.json();
+        // If backend found invalid dirs (deleted/missing folders), remove them from chat
+        if (data.invalid_dirs && data.invalid_dirs.length && chat) {
+            const removed = new Set(data.invalid_dirs);
+            const before = chat.workingDirs.length;
+            chat.workingDirs = chat.workingDirs.filter(d => !removed.has(d));
+            if (chat.workingDirs.length !== before) {
+                renderFolderBar();
+                renderChatList();
+                saveChats();
+                // Show a brief notice
+                const notice = document.createElement('div');
+                notice.className = 'folder-removed-notice';
+                notice.textContent = `${removed.size} folder(s) no longer accessible and were removed.`;
+                const chatEl2 = document.getElementById('chat');
+                chatEl2.appendChild(notice);
+                setTimeout(() => notice.remove(), 4000);
+            }
+        }
+    } catch {}
 }
 
 // ── Chat list sidebar ─────────────────────────────────────────────────
@@ -163,6 +184,7 @@ async function switchChat(id) {
     renderChatList();
     renderFolderBar();
     renderHistory();
+    updateContextBadge();
     saveChats();
     sidebar.classList.add('collapsed');
 }
@@ -240,19 +262,25 @@ newChatBtn.onclick = async () => {
     sidebar.classList.add('collapsed');
 };
 
+// ── Context badge (in header) ─────────────────────────────────────────
+const contextBadge = document.getElementById('context-badge');
+
+function updateContextBadge() {
+    if (!contextBadge) return;
+    const chat = activeChat();
+    if (!chat || !chat.history.length) {
+        contextBadge.textContent = '—';
+        return;
+    }
+    const charCount = chat.history.reduce((n, m) => n + String(m.content || '').length, 0);
+    const tokEst = Math.round(charCount / 4);
+    contextBadge.textContent = `~${tokEst.toLocaleString()}t`;
+}
+
 // ── Chat menu (⋮) ─────────────────────────────────────────────────────
 chatMenuBtn.onclick = (e) => {
     e.stopPropagation();
     chatMenu.classList.toggle('hidden');
-    // Issue 6: load context usage when menu opens
-    if (!chatMenu.classList.contains('hidden')) {
-        const chat = activeChat();
-        const msgCount = chat ? chat.history.length : 0;
-        const charCount = chat ? chat.history.reduce((n,m) => n + String(m.content||'').length, 0) : 0;
-        const tokEst = Math.round(charCount / 4);
-        const el = document.getElementById('context-info');
-        if (el) el.textContent = `~${tokEst.toLocaleString()} tokens · ${msgCount} msgs`;
-    }
 };
 document.addEventListener('click', () => {
     chatMenu.classList.add('hidden');
@@ -294,6 +322,14 @@ deleteChatBtn.onclick = async (e) => {
     if (!chat) return;
     if (!confirm(`Delete "${chat.title}"?`)) return;
     const deletedId = activeChatId;
+
+    // Delete the chat's JSON file from backend
+    await fetch('/delete_chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: deletedId })
+    });
+
     chats = chats.filter(c => c.id !== deletedId);
     if (chats.length) {
         activeChatId = chats[0].id;
@@ -636,6 +672,7 @@ async function send() {
                         if (chat) {
                             chat.history = ev.history;
                             saveChats();
+                            updateContextBadge();
                         }
                         break;
                     }
@@ -697,6 +734,7 @@ async function init() {
             });
             await syncWorkingDirs();
             renderHistory();
+            updateContextBadge();
         }
     } else if (!chats.length) {
         const chat = createChat();
