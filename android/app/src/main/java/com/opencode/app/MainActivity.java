@@ -30,6 +30,10 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.FileOutputStream;
+
 public class MainActivity extends Activity {
 
     public static MainActivity instance;
@@ -78,6 +82,7 @@ public class MainActivity extends Activity {
             e.printStackTrace();
         }
 
+        extractToybox();
         setupFullscreen();
         requestFileAccess();
 
@@ -89,6 +94,27 @@ public class MainActivity extends Activity {
 
         new Handler(Looper.getMainLooper()).postDelayed(
             () -> webView.loadUrl(FLASK_URL), SERVER_START_DELAY_MS);
+    }
+
+    private void extractToybox() {
+        File toybox = new File(getFilesDir(), "toybox");
+        try {
+            InputStream in = getAssets().open("toybox");
+            OutputStream out = new FileOutputStream(toybox);
+            byte[] buf = new byte[8192];
+            int len;
+            while ((len = in.read(buf)) != -1) out.write(buf, 0, len);
+            in.close();
+            out.close();
+            toybox.setExecutable(true, false);
+
+            File pathFile = new File(getFilesDir(), "toybox_path.txt");
+            java.io.FileWriter w = new java.io.FileWriter(pathFile);
+            w.write(toybox.getAbsolutePath());
+            w.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     // ── Fullscreen ────────────────────────────────────────────────────────────

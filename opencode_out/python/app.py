@@ -186,6 +186,21 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "shell",
+            "description": "Run a shell command using toybox (a lightweight Unix toolbox). Supports common commands: ls, cat, cp, mv, rm, mkdir, rmdir, find, grep, sed, awk, sort, uniq, head, tail, wc, echo, pwd, chmod, touch, diff, tar, gzip, and more. Commands run in the working directory. Use this for file operations, text processing, or exploring the filesystem.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to run (e.g., 'ls -la', 'find . -name *.py', 'cat file.txt | grep error')"},
+                    "cwd": {"type": "string", "description": "Working directory override (defaults to project working directory)"}
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "edit",
             "description": "Replace a specific string in a file with new content.",
             "parameters": {
@@ -519,6 +534,56 @@ def tool_github_walk(action, repo, file_path=None, branch=None):
     return f"Unknown action: {action}"
 
 
+def _get_toybox_path():
+    possible_paths = [
+        "/data/data/com.opencode.app/files/toybox_path.txt",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "toybox_path.txt"),
+    ]
+    for p in possible_paths:
+        if os.path.isfile(p):
+            try:
+                with open(p) as f:
+                    path = f.read().strip()
+                if path and os.path.isfile(path):
+                    return path
+            except Exception:
+                pass
+    return None
+
+
+def tool_shell(command, cwd=None):
+    import subprocess
+    global working_dir
+
+    toybox = _get_toybox_path()
+    if not toybox:
+        return "Error: toybox binary not available."
+
+    run_cwd = cwd or working_dir or None
+
+    wrapped = f"{toybox} sh -c {repr(command)}"
+    try:
+        result = subprocess.run(
+            [toybox, "sh", "-c", command],
+            cwd=run_cwd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        output = result.stdout
+        if result.stderr:
+            output += ("\n" if output else "") + result.stderr
+        if not output.strip():
+            return f"(exit code {result.returncode}, no output)"
+        if len(output) > 20000:
+            output = output[:20000] + "\n... (truncated)"
+        return output
+    except subprocess.TimeoutExpired:
+        return "Error: command timed out after 30 seconds"
+    except Exception as e:
+        return f"Shell error: {e}"
+
+
 def run_tool(name, args):
     if name == "web_search":
         return websearch(args.get("query", ""), args.get("num_results", 8))
@@ -536,6 +601,8 @@ def run_tool(name, args):
         return tool_github_walk(args.get("action", "tree"), args.get("repo", ""), args.get("file_path"), args.get("branch"))
     elif name == "edit":
         return tool_edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), args.get("replaceAll", False))
+    elif name == "shell":
+        return tool_shell(args.get("command", ""), args.get("cwd"))
     return f"Unknown tool: {name}"
 
 
