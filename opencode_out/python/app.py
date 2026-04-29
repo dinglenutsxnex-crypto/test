@@ -568,12 +568,20 @@ def tool_shell(command, cwd=None):
         run_cwd = None
 
     try:
-        parts = shlex.split(command)
+        parts = shlex.split(command.strip())
     except ValueError as e:
         return f"Parse error: {e}"
 
     if not parts:
         return "Empty command."
+
+    if parts[0] == "toybox":
+        parts = parts[1:]
+    if not parts:
+        parts = ["help"]
+
+    if parts[0] in ("--help", "-h", "help"):
+        parts = ["help"]
 
     try:
         result = subprocess.run(
