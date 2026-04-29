@@ -173,15 +173,33 @@ public class MainActivity extends Activity {
             busyboxPath = "";
             android.util.Log.e("BusyBox", "libexec.so missing from: " + nativeLibDir);
         }
-        // Write path to filesDir so Python can read it.
-        // This is the ONLY source of truth — done before Python starts.
+        // Write diagnostic info to filesDir so Python can read it.
         try {
+            String nativeLibDir2 = getApplicationInfo().nativeLibraryDir;
+            StringBuilder sb = new StringBuilder();
+            sb.append("busybox_path=").append(busyboxPath).append("\n");
+            sb.append("native_lib_dir=").append(nativeLibDir2).append("\n");
+            // List all files in native lib dir
+            File nld = new File(nativeLibDir2);
+            if (nld.exists() && nld.isDirectory()) {
+                File[] files = nld.listFiles();
+                if (files != null) {
+                    for (File ff : files) {
+                        sb.append("lib_file=").append(ff.getName())
+                          .append(" size=").append(ff.length())
+                          .append(" exec=").append(ff.canExecute()).append("\n");
+                    }
+                } else {
+                    sb.append("lib_files=null\n");
+                }
+            } else {
+                sb.append("native_lib_dir_exists=false\n");
+            }
             File f = new File(getFilesDir(), "busybox_path.txt");
             java.io.FileWriter fw = new java.io.FileWriter(f, false);
-            fw.write(busyboxPath);
+            fw.write(sb.toString());
             fw.flush();
             fw.close();
-            android.util.Log.i("BusyBox", "Wrote path file: " + f.getAbsolutePath());
         } catch (Exception e) {
             android.util.Log.e("BusyBox", "Failed to write path file: " + e.getMessage());
         }
