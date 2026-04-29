@@ -43,18 +43,7 @@ def get_opencode_dir():
     d = os.path.join(base, "opencode")
     os.makedirs(d, exist_ok=True)
     return d
-    except Exception:
-        pass
-    
-    # Fallback to Documents/opencode on external storage
-    base = os.path.expanduser("~")
-    if "/data/data" in base:
-        # We're in app sandbox, use external storage instead
-        base = "/storage/emulated/0"
-    
-    d = os.path.join(base, "Documents", "opencode")
-    os.makedirs(d, exist_ok=True)
-    return d
+
 
 def chats_file():
     return os.path.join(get_opencode_dir(), "chats.json")
