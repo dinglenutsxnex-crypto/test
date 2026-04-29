@@ -3,7 +3,6 @@ import json
 import re
 import glob as glob_module
 import fnmatch
-import subprocess
 import requests
 from flask import Flask, send_file, request, jsonify, send_from_directory, Response, stream_with_context
 from python.config import API_URL, MODEL, HOST, PORT, WORKING_DIR
@@ -12,7 +11,19 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 app = Flask(__name__, template_folder=ROOT, static_folder=ROOT + '/ui')
 
 history = []
-working_dir = WORKING_DIR
+working_dir = WORKING_DIR   # kept for compat; primary dirs below
+working_dirs = []           # list of active working dirs (multiple folders)
+current_chat_id = None
+
+# -- Storage dir (~/opencode) --
+def get_opencode_dir():
+    base = os.path.expanduser("~")
+    d = os.path.join(base, "opencode")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+def chats_file():
+    return os.path.join(get_opencode_dir(), "chats.json")
 
 def resolve_path(path, cwd=None):
     if not cwd:
@@ -137,34 +148,6 @@ TOOLS = [
                 "required": ["filePath", "oldString", "newString"]
             }
         }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "terminal",
-            "description": "Execute shell commands. Returns stdout/stderr.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "Shell command to run"}
-                },
-                "required": ["command"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "python",
-            "description": "Execute Python code and return the output.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "code": {"type": "string", "description": "Python code to execute"}
-                },
-                "required": ["code"]
-            }
-        }
     }
 ]
 
@@ -225,16 +208,18 @@ def webfetch(url):
 
 
 def tool_glob(pattern, path=None):
-    global working_dir
-    if not working_dir:
-        return "No working directory set. Use /set_working_dir to set it first."
-    base = resolve_path(path) if path else working_dir
-    if not is_within_dir(base, working_dir):
-        return f"Error: Path '{path}' is outside working directory"
+    global working_dir, working_dirs
+    dirs = working_dirs if working_dirs else ([working_dir] if working_dir else [])
+    if not dirs:
+        return "No working directory set."
+    base_dir = dirs[0]
+    base = resolve_path(path, base_dir) if path else base_dir
+    if not any(is_within_dir(base, d) for d in dirs):
+        return f"Error: Path '{path}' is outside all working directories"
     try:
         full_pattern = os.path.join(base, pattern)
         matches = glob_module.glob(full_pattern, recursive=True)
-        matches = [m for m in matches if is_within_dir(m, working_dir)]
+        matches = [m for m in matches if any(is_within_dir(m, d) for d in dirs)]
         if not matches:
             return f"No files matching '{pattern}'"
         rel_matches = [os.path.relpath(m, base) for m in matches[:100]]
@@ -350,59 +335,6 @@ def tool_edit(filePath, oldString, newString, replaceAll=False):
         return f"Edit error: {e}"
 
 
-def tool_terminal(command):
-    global working_dir
-    if not working_dir:
-        return "Error: No working directory set. Use /set_working_dir first."
-    try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=working_dir,
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        output = []
-        if result.stdout:
-            output.append(result.stdout)
-        if result.stderr:
-            output.append(result.stderr)
-        if result.returncode != 0 and not result.stdout and not result.stderr:
-            output.append(f"exit code: {result.returncode}")
-        return "\n".join(output) if output else "(no output)"
-    except subprocess.TimeoutExpired:
-        return "Error: Command timed out (30s limit)"
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def tool_python(code):
-    global working_dir
-    if not working_dir:
-        return "Error: No working directory set. Use /set_working_dir first."
-    try:
-        result = subprocess.run(
-            ["python3", "-c", code],
-            cwd=working_dir,
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        output = []
-        if result.stdout:
-            output.append(result.stdout)
-        if result.stderr:
-            output.append(f"Error: {result.stderr}")
-        return "\n".join(output) if output else "(no output)"
-    except FileNotFoundError:
-        return "Error: Python3 not found"
-    except subprocess.TimeoutExpired:
-        return "Error: Code execution timed out (30s limit)"
-    except Exception as e:
-        return f"Error: {e}"
-
-
 def run_tool(name, args):
     if name == "web_search":
         return websearch(args.get("query", ""), args.get("num_results", 8))
@@ -418,10 +350,6 @@ def run_tool(name, args):
         return tool_write(args.get("content", ""), args.get("filePath", ""))
     elif name == "edit":
         return tool_edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), args.get("replaceAll", False))
-    elif name == "terminal":
-        return tool_terminal(args.get("command", ""))
-    elif name == "python":
-        return tool_python(args.get("code", ""))
     return f"Unknown tool: {name}"
 
 
@@ -480,20 +408,23 @@ def list_dir():
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    global history, working_dir
+    global history, working_dir, working_dirs
     data = request.json
     user_msg = data.get("message", "")
     model = data.get("model", MODEL)
-    cwd_hint = data.get("working_dir", working_dir)
     history.append({"role": "user", "content": user_msg})
 
-    if working_dir:
-        try:
-            top_files = sorted(os.listdir(working_dir))[:30]
-            file_hint = "\n".join(top_files)
-        except Exception:
-            file_hint = "(unreadable)"
-        system_msg = {"role": "system", "content": f"Working directory: {working_dir}\nTop-level contents:\n{file_hint}\n\nAlways use tools relative to the working directory. Never navigate above it."}
+    dirs = working_dirs if working_dirs else ([working_dir] if working_dir else [])
+    if dirs:
+        hints = []
+        for d in dirs:
+            try:
+                files = sorted(os.listdir(d))[:30]
+                hints.append(f"Folder: {d}\nContents:\n" + "\n".join(files))
+            except Exception:
+                hints.append(f"Folder: {d} (unreadable)")
+        dir_info = "\n\n".join(hints)
+        system_msg = {"role": "system", "content": f"You have access to {len(dirs)} project folder(s):\n\n{dir_info}\n\nAlways use tools relative to these directories. Never navigate above them."}
     else:
         system_msg = {"role": "system", "content": "No working directory set. Ask user to select a project folder first."}
     msgs_with_sys = [system_msg] + list(history)
@@ -597,8 +528,9 @@ def chat():
 
         if full_content:
             history.append({"role": "assistant", "content": full_content})
-            if len(history) > 20:
-                history = history[-20:]
+            if len(history) > 40:
+                history = history[-40:]
+            yield f"data: {json.dumps({'type': 'history_update', 'history': history})}\n\n"
 
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
@@ -618,6 +550,55 @@ def clear():
     global history
     history = []
     return jsonify({"status": "cleared"})
+
+
+@app.route("/working_dirs", methods=["POST"])
+def set_working_dirs():
+    global working_dirs, working_dir
+    data = request.json
+    dirs = data.get("working_dirs", [])
+    # Validate each dir
+    valid = [d for d in dirs if d and os.path.isdir(d)]
+    working_dirs = valid
+    working_dir = valid[0] if valid else ""
+    return jsonify({"status": "ok", "working_dirs": working_dirs})
+
+
+@app.route("/switch_chat", methods=["POST"])
+def switch_chat():
+    global history, current_chat_id
+    data = request.json
+    current_chat_id = data.get("chat_id")
+    history = data.get("history", [])
+    return jsonify({"status": "ok"})
+
+
+@app.route("/storage_dir", methods=["GET"])
+def storage_dir():
+    return jsonify({"path": get_opencode_dir()})
+
+
+@app.route("/save_chats", methods=["POST"])
+def save_chats():
+    data = request.json
+    try:
+        with open(chats_file(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+
+@app.route("/load_chats", methods=["GET"])
+def load_chats():
+    try:
+        with open(chats_file(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return jsonify(data)
+    except FileNotFoundError:
+        return jsonify({"chats": [], "activeChatId": None})
+    except Exception as e:
+        return jsonify({"chats": [], "activeChatId": None, "error": str(e)})
 
 
 if __name__ == "__main__":
