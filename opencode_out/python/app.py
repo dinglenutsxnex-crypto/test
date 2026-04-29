@@ -5,7 +5,7 @@ import glob as glob_module
 import fnmatch
 import requests
 from flask import Flask, send_file, request, jsonify, send_from_directory, Response, stream_with_context
-from python.config import API_URL, MODEL, HOST, PORT, WORKING_DIR, MAX_TOKENS, COMPACTION_THRESHOLD
+from python.config import API_URL, MODEL, HOST, PORT, WORKING_DIR, MAX_TOKENS
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 app = Flask(__name__, template_folder=ROOT, static_folder=ROOT + '/ui')
@@ -553,39 +553,11 @@ def chat():
     previous_summary = None
 
     def generate():
-        global history, previous_summary
+        global history
         import time
         messages = list(msgs_with_sys)
         full_content = ""
         last_heartbeat = time.time()
-
-        if needs_compaction and previous_summary:
-            context = [f"--- Recent conversation (summary) ---\n{previous_summary}"]
-            compact_prompt = "Update the summary with new progress. Keep all sections. Be concise."
-        elif needs_compaction:
-            context = []
-            compact_prompt = "Create a new summary from the conversation."
-        else:
-            context = []
-
-        if needs_compaction and context:
-            summary_payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": SUMMARY_TEMPLATE},
-                    {"role": "user", "content": compact_prompt + "\n\n" + "\n\n".join(context + [f"{m['role']}: {m['content'][:2000]}" for m in messages[-10:]])}
-                ],
-                "max_tokens": 2000
-            }
-            try:
-                summary_resp = requests.post(API_URL, json=summary_payload, timeout=60)
-                if summary_resp.status_code == 200:
-                    summary_txt = summary_resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-                    if summary_txt:
-                        previous_summary = summary_txt.strip()
-                        messages = [{"role": "system", "content": f"Previous summary:\n{summary_txt}\n\nRecent context above is summarized."}] + messages[-4:]
-            except:
-                pass
 
         for _round in range(1000):
             payload = {
