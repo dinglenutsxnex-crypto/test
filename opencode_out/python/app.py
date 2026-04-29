@@ -174,7 +174,7 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["tree", "read"], "description": "'tree' to list all files in the repo, 'read' to fetch a file's contents"},
+                    "action": {"type": "string", "description": "Use 'tree' to list all files in the repo, 'read' to fetch a specific file's contents"},
                     "repo": {"type": "string", "description": "GitHub repo in 'owner/repo' format, e.g. 'facebook/react'"},
                     "file_path": {"type": "string", "description": "Path to file within repo (required for action='read'), e.g. 'src/index.js'"},
                     "branch": {"type": "string", "description": "Branch name (optional, auto-detected if omitted)"}
@@ -479,17 +479,21 @@ def tool_github_walk(action, repo, file_path=None, branch=None):
             data = r.json()
             items = data.get("tree", [])
             truncated = data.get("truncated", False)
-            lines = [f"# {repo} ({branch})\n"]
-            for item in items:
-                path = item["path"]
-                kind = item["type"]  # "blob" or "tree"
-                prefix = "📄 " if kind == "blob" else "📁 "
-                depth = path.count("/")
-                indent = "  " * depth
-                name = path.split("/")[-1]
-                lines.append(f"{indent}{prefix}{name}  ({path})")
+
+            # Only show files (blobs), skip tree entries — cleaner and much smaller
+            files = [item["path"] for item in items if item["type"] == "blob"]
+            total = len(files)
+            MAX_FILES = 400
+            capped = total > MAX_FILES
+            if capped:
+                files = files[:MAX_FILES]
+
+            lines = [f"# {repo} @ {branch}  ({total} files total)\n"]
+            lines += files
+            if capped:
+                lines.append(f"\n... showing {MAX_FILES}/{total} files. Use action='read' with a specific file_path to read any file.")
             if truncated:
-                lines.append("\n⚠️ Tree truncated (repo too large). Use file_path to drill into subdirs.")
+                lines.append("⚠️ GitHub truncated the tree (repo is very large). Results may be incomplete.")
             return "\n".join(lines)
         except Exception as e:
             return f"GitHub tree error: {e}"
@@ -506,8 +510,8 @@ def tool_github_walk(action, repo, file_path=None, branch=None):
             if r.status_code != 200:
                 return f"Failed to read file: {r.status_code}"
             content = r.text
-            if len(content) > 50000:
-                content = content[:50000] + f"\n\n... (truncated, {len(r.text)} chars total)"
+            if len(content) > 20000:
+                content = content[:20000] + f"\n\n... (truncated, {len(r.text)} chars total — use offset/limit params or ask for a specific section)"
             return f"# {repo}/{file_path}\n\n{content}"
         except Exception as e:
             return f"GitHub read error: {e}"
