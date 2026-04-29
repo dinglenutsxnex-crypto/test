@@ -193,13 +193,48 @@ def strip_html(html):
     html = re.sub(r'[ \t]+', ' ', html)
     return html.strip()
 
+def _android_webview_fetch(url):
+    """Fetch URL via the hidden Android WebView — real browser, bypasses bot detection."""
+    try:
+        from com.opencode.app import MainActivity
+        activity = MainActivity.instance
+        if activity is None:
+            return None
+        html = activity.fetchUrlSync(url)
+        if html and len(html) > 200:
+            return html
+    except Exception:
+        pass
+    return None
+
 
 def websearch(query, num_results=8):
-    # Primary: Jina search API
+    import urllib.parse
+    encoded = urllib.parse.quote(query)
+
+    # 1. Android WebView — real browser, best bot-detection bypass
+    html = _android_webview_fetch(f"https://html.duckduckgo.com/html/?q={encoded}")
+    if html:
+        titles   = re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, re.DOTALL)
+        urls     = re.findall(r'class="result__url"[^>]*>(.*?)</span>', html, re.DOTALL)
+        snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
+        titles   = [re.sub(r'<[^>]+>', '', t).strip() for t in titles]
+        urls     = [u.strip() for u in urls]
+        snippets = [re.sub(r'<[^>]+>', '', s).strip() for s in snippets]
+        results  = list(zip(titles, urls, snippets))[:num_results]
+        if results:
+            lines = [f"Search results for: **{query}**\n"]
+            for i, (title, url, snippet) in enumerate(results, 1):
+                lines.append(f"{i}. **{title}**")
+                if url:     lines.append(f"   {url}")
+                if snippet: lines.append(f"   {snippet}")
+                lines.append("")
+            return "\n".join(lines)
+
+    # 2. Jina search API
     try:
-        import urllib.parse
         resp = requests.get(
-            f"https://s.jina.ai/?q={urllib.parse.quote(query)}",
+            f"https://s.jina.ai/?q={encoded}",
             headers={"Accept": "text/plain", "User-Agent": "Mozilla/5.0"},
             timeout=30
         )
@@ -208,7 +243,7 @@ def websearch(query, num_results=8):
     except Exception:
         pass
 
-    # Fallback: DuckDuckGo HTML scrape
+    # 3. DuckDuckGo raw request (last resort)
     try:
         resp = requests.get(
             "https://html.duckduckgo.com/html/",
@@ -216,19 +251,19 @@ def websearch(query, num_results=8):
             headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"},
             timeout=30
         )
-        titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', resp.text, re.DOTALL)
-        urls = re.findall(r'class="result__url"[^>]*>(.*?)</span>', resp.text, re.DOTALL)
+        titles   = re.findall(r'class="result__a"[^>]*>(.*?)</a>', resp.text, re.DOTALL)
+        urls     = re.findall(r'class="result__url"[^>]*>(.*?)</span>', resp.text, re.DOTALL)
         snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', resp.text, re.DOTALL)
-        titles = [re.sub(r'<[^>]+>', '', t).strip() for t in titles]
-        urls = [u.strip() for u in urls]
+        titles   = [re.sub(r'<[^>]+>', '', t).strip() for t in titles]
+        urls     = [u.strip() for u in urls]
         snippets = [re.sub(r'<[^>]+>', '', s).strip() for s in snippets]
-        results = list(zip(titles, urls, snippets))[:num_results]
+        results  = list(zip(titles, urls, snippets))[:num_results]
         if not results:
             return f"No results found for: {query}"
         lines = [f"Search results for: **{query}**\n"]
         for i, (title, url, snippet) in enumerate(results, 1):
             lines.append(f"{i}. **{title}**")
-            if url: lines.append(f"   {url}")
+            if url:     lines.append(f"   {url}")
             if snippet: lines.append(f"   {snippet}")
             lines.append("")
         return "\n".join(lines)
@@ -237,7 +272,12 @@ def websearch(query, num_results=8):
 
 
 def webfetch(url):
-    # Primary: Jina Reader API (handles JS-rendered pages, returns clean markdown)
+    # 1. Android WebView — renders JS, real browser UA
+    html = _android_webview_fetch(url)
+    if html:
+        return strip_html(html)[:30000]
+
+    # 2. Jina Reader API — clean markdown, also renders JS
     try:
         resp = requests.get(
             f"https://r.jina.ai/{url}",
@@ -249,7 +289,7 @@ def webfetch(url):
     except Exception:
         pass
 
-    # Fallback: raw fetch + strip HTML
+    # 3. Raw request + strip HTML
     try:
         resp = requests.get(
             url,
@@ -259,6 +299,7 @@ def webfetch(url):
         return strip_html(resp.text)[:30000]
     except Exception as e:
         return f"Fetch error: {e}"
+
 
 
 def tool_glob(pattern, path=None):

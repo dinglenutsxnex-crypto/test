@@ -27,10 +27,14 @@ import com.chaquo.python.android.AndroidPlatform;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends Activity {
 
+    public static MainActivity instance;
     private WebView webView;
+    private WebView fetchWebView;
     private static final int FLASK_PORT = 5000;
     private static final String FLASK_URL = "http://localhost:" + FLASK_PORT;
     private static final int SERVER_START_DELAY_MS = 2500;
@@ -45,6 +49,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        instance = this;
         setContentView(R.layout.activity_main);
 
         prefs = getSharedPreferences("opencode", MODE_PRIVATE);
@@ -78,6 +83,7 @@ public class MainActivity extends Activity {
 
         webView = findViewById(R.id.webview);
         setupWebView();
+        setupFetchWebView();
         webView.loadData(LOADING_HTML, "text/html", "UTF-8");
         startFlaskServer();
 
@@ -167,6 +173,64 @@ public class MainActivity extends Activity {
         });
         t.setDaemon(true);
         t.start();
+    }
+
+    // ── Hidden fetch WebView ──────────────────────────────────────────────────
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private void setupFetchWebView() {
+        fetchWebView = new WebView(this);
+        // 1×1 pixel — invisible but alive in the view hierarchy
+        addContentView(fetchWebView, new android.view.ViewGroup.LayoutParams(1, 1));
+        WebSettings s = fetchWebView.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        s.setUserAgentString(
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) " +
+            "Chrome/120.0.0.0 Mobile Safari/537.36");
+    }
+
+    /** Called from Python via Chaquopy. Blocks until the page loads (max 20s). */
+    public String fetchUrlSync(final String url) {
+        final CountDownLatch latch = new CountDownLatch(1);
+        final String[] result = {""};
+
+        new Handler(Looper.getMainLooper()).post(() ->  {
+            fetchWebView.setWebViewClient(new WebViewClient() {
+                private boolean done = false;
+
+                @Override
+                public void onPageFinished(WebView view, String u) {
+                    if (done) return;
+                    done = true;
+                    view.evaluateJavascript("document.documentElement.outerHTML", value -> {
+                        if (value != null) result[0] = value;
+                        latch.countDown();
+                    });
+                }
+
+                @Override
+                public void onReceivedError(WebView view, int code, String desc, String failUrl) {
+                    if (done) return;
+                    done = true;
+                    latch.countDown();
+                }
+            });
+            fetchWebView.loadUrl(url);
+        });
+
+        try { latch.await(20, TimeUnit.SECONDS); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+
+        // evaluateJavascript returns a JSON string — unwrap the outer quotes and unescape
+        String html = result[0];
+        if (html.length() >= 2 && html.charAt(0) == '"') {
+            try {
+                html = new org.json.JSONArray("[" + html + "]").getString(0);
+            } catch (Exception ignored) {}
+        }
+        return html;
     }
 
     // ── WebView ───────────────────────────────────────────────────────────────
