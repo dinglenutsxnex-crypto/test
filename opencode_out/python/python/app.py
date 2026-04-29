@@ -351,34 +351,28 @@ def tool_write(content, filePath):
 
 
 def _find_busybox():
-    """Locate the busybox binary (installed as libexec.so in the native lib dir)."""
-    pkg = "com.opencode.app"
+    """Locate libexec.so using Android API (Chaquopy), then glob fallback."""
+    # 1. Ask Android directly — most reliable, works on all versions
+    try:
+        from com.chaquo.python import Python as _Py
+        from android.content import Context as _Ctx
+        ctx = _Py.getPlatform().getApplication()
+        native_lib_dir = ctx.getApplicationInfo().nativeLibraryDir
+        candidate = os.path.join(native_lib_dir, "libexec.so")
+        if os.path.isfile(candidate):
+            return candidate
+    except Exception:
+        pass
 
-    # 1. Read the path file written by Java on startup (most reliable)
-    path_file_candidates = [
-        f"/data/data/{pkg}/files/busybox_path.txt",
-        f"/data/user/0/{pkg}/files/busybox_path.txt",
-    ]
-    for pf in path_file_candidates:
-        if os.path.isfile(pf):
-            try:
-                with open(pf, "r") as fh:
-                    candidate = fh.read().strip()
-                if candidate and os.path.isfile(candidate):
-                    return candidate
-            except Exception:
-                pass
-
-    # 2. Scan native library dirs directly — busybox ships as libexec.so
-    #    These dirs are always exec-allowed (installed by the package manager).
+    # 2. Glob fallback — covers all known Android path layouts
     import glob as _glob
-    native_lib_patterns = [
+    pkg = "com.opencode.app"
+    patterns = [
         f"/data/app/{pkg}-*/lib/arm64/libexec.so",
-        f"/data/app/*/base.apk!/lib/arm64-v8a/libexec.so",
-        # Android 10+ may use a different base path
         f"/data/app/~~*/{pkg}-*/lib/arm64/libexec.so",
+        f"/data/app/~~*/{pkg}*/lib/arm64/libexec.so",
     ]
-    for pattern in native_lib_patterns:
+    for pattern in patterns:
         matches = _glob.glob(pattern)
         if matches:
             return matches[0]

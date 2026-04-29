@@ -163,37 +163,18 @@ public class MainActivity extends Activity {
     // We just need to discover that path and write it for Python to read.
 
     private void extractBusybox() {
-        // The native lib dir is exec-allowed on all Android versions without root.
-        // Android installs libexec.so there automatically at install/update time.
+        // libexec.so is installed by the package manager into nativeLibraryDir,
+        // which is always exec-allowed. Python finds it via Chaquopy's Android API
+        // so no path file is needed — just log for diagnostics.
         String nativeLibDir = getApplicationInfo().nativeLibraryDir;
         File busyboxFile = new File(nativeLibDir, "libexec.so");
-
-        if (!busyboxFile.exists()) {
-            // Shouldn't happen after install, but log it for debugging
-            android.util.Log.e("BusyBox", "libexec.so not found in: " + nativeLibDir);
-            busyboxPath = "";
-        } else {
+        if (busyboxFile.exists()) {
             busyboxPath = busyboxFile.getAbsolutePath();
-            // Ensure executable bit is set (should already be, but be defensive)
             busyboxFile.setExecutable(true, true);
-        }
-
-        // Write the path so Python can find it
-        writeBusyboxPathFile(busyboxPath);
-    }
-
-    private void writeBusyboxPathFile(String path) {
-        File[] dirs = {
-            getApplicationContext().getFilesDir(),
-        };
-        for (File dir : dirs) {
-            try {
-                java.io.FileWriter fw = new java.io.FileWriter(new File(dir, "busybox_path.txt"));
-                fw.write(path);
-                fw.close();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
+            android.util.Log.i("BusyBox", "Ready at: " + busyboxPath);
+        } else {
+            busyboxPath = "";
+            android.util.Log.e("BusyBox", "libexec.so missing from: " + nativeLibDir);
         }
     }
 
