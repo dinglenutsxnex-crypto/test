@@ -156,40 +156,66 @@ public class MainActivity extends Activity {
     }
 
     // ── BusyBox extraction ────────────────────────────────────────────────────
+    //
+    // Android mounts getFilesDir() with the "noexec" flag, so binaries copied
+    // there cannot be executed even after chmod +x.  The exec-safe locations are:
+    //   1. getCodeCacheDir()  — guaranteed exec-allowed by the OS (API 21+)
+    //   2. getDir("exec_bin", MODE_PRIVATE) — fallback, also exec-permitted
+    // We use getCodeCacheDir() and fall back to getDir("exec_bin", ...).
 
     private void extractBusybox() {
-        File destFile = new File(getApplicationContext().getFilesDir(), "busybox");
+        // codeCacheDir is exec-allowed on all API 21+ devices (unlike filesDir)
+        File execDir = getApplicationContext().getCodeCacheDir();
+        if (execDir == null || !execDir.exists()) {
+            execDir = getApplicationContext().getDir("exec_bin", MODE_PRIVATE);
+        }
+        execDir.mkdirs();
+
+        File destFile = new File(execDir, "busybox");
         busyboxPath = destFile.getAbsolutePath();
 
-        // Write busybox path so Python can find it
-        try {
-            File pathFile = new File(getApplicationContext().getFilesDir(), "busybox_path.txt");
-            java.io.FileWriter fw = new java.io.FileWriter(pathFile);
-            fw.write(busyboxPath);
-            fw.close();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        // Write the path to filesDir so Python can discover it
+        writeBusyboxPathFile(busyboxPath);
 
         if (destFile.exists() && destFile.length() > 1000) {
-            // Already extracted; ensure it's executable
-            destFile.setExecutable(true, false);
+            // Already extracted — re-apply executable bit defensively
+            destFile.setExecutable(true, true);
             return;
         }
 
+        // Extract from assets
         try (InputStream in = getAssets().open("busybox");
-             OutputStream out = new FileOutputStream(destFile)) {
-            byte[] buf = new byte[8192];
+             FileOutputStream out = new FileOutputStream(destFile)) {
+            byte[] buf = new byte[16384];
             int read;
             while ((read = in.read(buf)) != -1) {
                 out.write(buf, 0, read);
             }
+            out.getFD().sync();
         } catch (Exception e) {
             e.printStackTrace();
             return;
         }
 
-        destFile.setExecutable(true, false);
+        // Make executable for owner and group
+        destFile.setExecutable(true, true);
+    }
+
+    private void writeBusyboxPathFile(String path) {
+        // Write to filesDir and codeCacheDir so Python finds it from either location
+        File[] dirs = {
+            getApplicationContext().getFilesDir(),
+            getApplicationContext().getCodeCacheDir()
+        };
+        for (File dir : dirs) {
+            try {
+                java.io.FileWriter fw = new java.io.FileWriter(new File(dir, "busybox_path.txt"));
+                fw.write(path);
+                fw.close();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
     }
 
     // ── Flask server ──────────────────────────────────────────────────────────

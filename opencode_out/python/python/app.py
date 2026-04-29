@@ -350,34 +350,67 @@ def tool_write(content, filePath):
         return f"Write error: {e}"
 
 
+def _find_busybox():
+    """Locate the busybox binary by reading the path file Java wrote, or by scanning known dirs."""
+    import subprocess as _sp
+
+    # 1. Read the path file written by Java (checks both filesDir and codeCacheDir variants)
+    pkg = "com.opencode.app"
+    path_file_candidates = [
+        f"/data/data/{pkg}/files/busybox_path.txt",
+        f"/data/user/0/{pkg}/files/busybox_path.txt",
+        f"/data/data/{pkg}/code_cache/busybox_path.txt",
+        f"/data/user/0/{pkg}/code_cache/busybox_path.txt",
+    ]
+    for pf in path_file_candidates:
+        if os.path.isfile(pf):
+            try:
+                with open(pf, "r") as fh:
+                    candidate = fh.read().strip()
+                if candidate and os.path.isfile(candidate):
+                    return candidate
+            except Exception:
+                pass
+
+    # 2. Direct scan of known exec-allowed locations
+    direct_candidates = [
+        f"/data/data/{pkg}/code_cache/busybox",
+        f"/data/user/0/{pkg}/code_cache/busybox",
+        f"/data/data/{pkg}/app_exec_bin/busybox",
+        f"/data/user/0/{pkg}/app_exec_bin/busybox",
+    ]
+    for candidate in direct_candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    return None
+
+
 def tool_exec_busybox(command, cwd=None):
     """Execute a command using the bundled BusyBox binary."""
     import subprocess
 
-    # Find busybox binary path (written by Android Java on startup)
-    busybox_path = None
-    possible_path_files = [
-        "/data/data/com.opencode.app/files/busybox_path.txt",
-    ]
-    for pf in possible_path_files:
-        if os.path.isfile(pf):
-            try:
-                with open(pf, "r") as f:
-                    busybox_path = f.read().strip()
-                break
-            except Exception:
-                pass
+    busybox_path = _find_busybox()
 
-    if not busybox_path or not os.path.isfile(busybox_path):
-        return "BusyBox binary not found. Make sure it was extracted on app startup."
+    if not busybox_path:
+        return (
+            "BusyBox binary not found.\n"
+            "Expected location: app code_cache dir (e.g. /data/user/0/com.opencode.app/code_cache/busybox).\n"
+            "Make sure the app was freshly launched after the latest build."
+        )
 
     if not os.access(busybox_path, os.X_OK):
         try:
             os.chmod(busybox_path, 0o755)
         except Exception as e:
-            return f"BusyBox is not executable and chmod failed: {e}"
+            return (
+                f"BusyBox exists at {busybox_path} but is not executable.\n"
+                f"chmod failed: {e}\n"
+                "This usually means the binary is still in a noexec directory (filesDir). "
+                "Rebuild with the latest MainActivity.java which uses codeCacheDir."
+            )
 
-    work_dir = cwd if cwd and os.path.isdir(cwd) else "/data/data/com.opencode.app/files"
+    work_dir = cwd if cwd and os.path.isdir(cwd) else os.path.dirname(busybox_path)
 
     try:
         result = subprocess.run(
