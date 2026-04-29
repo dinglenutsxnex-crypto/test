@@ -537,6 +537,7 @@ def tool_github_walk(action, repo, file_path=None, branch=None):
 def _get_toybox_path():
     possible_paths = [
         "/data/data/com.opencode.app/files/toybox_path.txt",
+        "/data/user/0/com.opencode.app/files/toybox_path.txt",
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "toybox_path.txt"),
     ]
     for p in possible_paths:
@@ -544,7 +545,7 @@ def _get_toybox_path():
             try:
                 with open(p) as f:
                     path = f.read().strip()
-                if path and os.path.isfile(path):
+                if path and os.path.isfile(path) and os.access(path, os.X_OK):
                     return path
             except Exception:
                 pass

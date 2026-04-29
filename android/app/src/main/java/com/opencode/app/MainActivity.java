@@ -99,14 +99,17 @@ public class MainActivity extends Activity {
     private void extractToybox() {
         File toybox = new File(getFilesDir(), "toybox");
         try {
-            InputStream in = getAssets().open("toybox");
-            OutputStream out = new FileOutputStream(toybox);
-            byte[] buf = new byte[8192];
-            int len;
-            while ((len = in.read(buf)) != -1) out.write(buf, 0, len);
-            in.close();
-            out.close();
-            toybox.setExecutable(true, false);
+            if (!toybox.exists() || toybox.length() == 0) {
+                InputStream in = getAssets().open("toybox");
+                OutputStream out = new FileOutputStream(toybox);
+                byte[] buf = new byte[8192];
+                int len;
+                while ((len = in.read(buf)) != -1) out.write(buf, 0, len);
+                in.close();
+                out.close();
+            }
+
+            Runtime.getRuntime().exec(new String[]{"chmod", "755", toybox.getAbsolutePath()}).waitFor();
 
             File pathFile = new File(getFilesDir(), "toybox_path.txt");
             java.io.FileWriter w = new java.io.FileWriter(pathFile);
