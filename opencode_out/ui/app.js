@@ -1,6 +1,13 @@
 // ── State ─────────────────────────────────────────────────────────────
 let sending = false;
 let selectedModel = 'minimax-m2.5-free';
+let selectedModelCtx = 1000000; // context window tokens for active model
+
+function formatCtx(n) {
+    if (n >= 1000000) return (n / 1000000).toFixed(0) + 'M';
+    if (n >= 1000) return Math.round(n / 1000) + 'k';
+    return String(n);
+}
 
 // Each chat: { id, title, workingDirs: [], history: [], createdAt }
 let chats = [];
@@ -268,13 +275,13 @@ const contextBadge = document.getElementById('context-badge');
 function updateContextBadge() {
     if (!contextBadge) return;
     const chat = activeChat();
-    if (!chat || !chat.history.length) {
-        contextBadge.textContent = '—';
-        return;
-    }
-    const charCount = chat.history.reduce((n, m) => n + String(m.content || '').length, 0);
+    const charCount = chat ? chat.history.reduce((n, m) => n + String(m.content || '').length, 0) : 0;
     const tokEst = Math.round(charCount / 4);
-    contextBadge.textContent = `~${tokEst.toLocaleString()}t`;
+    const total = selectedModelCtx;
+    contextBadge.textContent = `${formatCtx(tokEst)}/${formatCtx(total)}`;
+    // Color hint: warn when >70%, red >90%
+    const pct = tokEst / total;
+    contextBadge.style.color = pct > 0.9 ? 'var(--err, #e05)' : pct > 0.7 ? 'var(--warn, #f90)' : '';
 }
 
 // ── Chat menu (⋮) ─────────────────────────────────────────────────────
@@ -320,39 +327,21 @@ deleteChatBtn.onclick = async (e) => {
     chatMenu.classList.add('hidden');
     const chat = activeChat();
     if (!chat) return;
-    if (!confirm(`Delete "${chat.title}"?`)) return;
-    const deletedId = activeChatId;
 
     // Delete the chat's JSON file from backend
     await fetch('/delete_chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: deletedId })
+        body: JSON.stringify({ chat_id: chat.id })
     });
 
-    chats = chats.filter(c => c.id !== deletedId);
-    if (chats.length) {
-        activeChatId = chats[0].id;
-        const nextChat = activeChat();
-        chatTitle.textContent = nextChat ? nextChat.title : 'new chat';
-        await fetch('/switch_chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: activeChatId, history: nextChat ? nextChat.history : [] })
-        });
-        await syncWorkingDirs();
-        renderFolderBar();
-        renderHistory();
-    } else {
-        activeChatId = null;
-        chatEl.innerHTML = '';
-        chatTitle.textContent = 'new chat';
-        await fetch('/switch_chat', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ chat_id: null, history: [] }) });
-        await syncWorkingDirs();
-        renderFolderBar();
-    }
-    renderChatList();
+    // Remove from local list and save updated index
+    chats = chats.filter(c => c.id !== chat.id);
+    activeChatId = chats.length ? chats[0].id : null;
     await saveChats();
+
+    // Reload the page — cleanest way to reset all state
+    location.reload();
 };
 
 // ── Sidebar toggle ────────────────────────────────────────────────────
@@ -368,11 +357,13 @@ modelDropdown.querySelectorAll('.model-option').forEach(btn => {
     btn.onclick = (e) => {
         e.stopPropagation();
         selectedModel = btn.dataset.model;
+        selectedModelCtx = parseInt(btn.dataset.ctx || '128000', 10);
         modelLabel.textContent = btn.dataset.label;
         modelDropdown.querySelectorAll('.model-option').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         modelDropdown.classList.add('hidden');
         modelBtn.classList.remove('open');
+        updateContextBadge();
     };
 });
 
