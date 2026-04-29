@@ -1,4 +1,5 @@
 import os
+import time
 import json
 import re
 import glob as glob_module
@@ -408,30 +409,31 @@ def tool_exec_busybox(command, cwd=None):
 
     try:
         bb = busybox_path
-        link_dir = "/data/data/com.opencode.app/files/bblinks"
-        os.makedirs(link_dir, exist_ok=True)
+        # Rewrite the command so every unknown applet is prefixed with the busybox path.
+        # busybox supports: `busybox <applet> <args>` regardless of its filename.
+        # We run via `busybox sh` and inject a shell function for every applet
+        # that forwards to `busybox <applet>`. No symlinks, no filesystem tricks.
         applets = [
             "ls","cat","grep","find","cp","mv","rm","mkdir","chmod","chown",
-            "echo","sed","awk","head","tail","wc","ps","df","du","tar","wget",
+            "sed","awk","head","tail","wc","ps","df","du","tar","wget",
             "curl","kill","date","pwd","touch","stat","sort","uniq","cut","tr",
-            "xargs","env","sleep","id","whoami","which","basename","dirname",
+            "xargs","sleep","id","whoami","which","basename","dirname",
             "readlink","realpath","md5sum","sha256sum","strings","hexdump",
             "dd","sync","ping","netstat","ifconfig","uname","free","uptime",
-            "pgrep","pkill","killall","sh","ash"
+            "pgrep","pkill","killall","vi","diff","patch","zip","unzip",
+            "gzip","gunzip","bzip2","bunzip2","lzma","unlzma","xz","unxz",
         ]
-        for applet in applets:
-            link = os.path.join(link_dir, applet)
-            if not os.path.exists(link):
-                try:
-                    os.symlink(bb, link)
-                except Exception:
-                    pass
-        bb_env = {**os.environ, "PATH": link_dir + ":/system/bin:/system/xbin"}
+        fn_block = "\n".join(
+            f"{a}() {{ {bb} {a} \"$@\"; }}" for a in applets
+        )
+        full_cmd = fn_block + "\n" + command
+
+        bb_env = {**os.environ, "PATH": "/system/bin:/system/xbin:/vendor/bin"}
         result = subprocess.run(
-            [os.path.join(link_dir, "sh"), "-c", command],
+            [bb, "sh", "-c", full_cmd],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=120,
             cwd=safe_cwd,
             env=bb_env
         )
@@ -582,12 +584,13 @@ def chat():
                 "model": model,
                 "messages": messages,
                 "stream": True,
+                "max_tokens": 8192,
                 "tools": TOOLS,
                 "tool_choice": "auto"
             }
 
             try:
-                api_resp = requests.post(API_URL, json=payload, stream=True, timeout=180)
+                api_resp = requests.post(API_URL, json=payload, stream=True, timeout=300)
                 api_resp.raise_for_status()
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
@@ -595,8 +598,13 @@ def chat():
 
             tool_calls_acc = {}
             round_content = ""
+            last_ping = time.time()
 
             for raw in api_resp.iter_lines():
+                now = time.time()
+                if now - last_ping > 5:
+                    yield ": ping\n\n"
+                    last_ping = now
                 if not raw:
                     continue
                 line = raw.decode("utf-8", errors="replace")
