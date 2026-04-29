@@ -15,10 +15,44 @@ working_dir = WORKING_DIR   # kept for compat; primary dirs below
 working_dirs = []           # list of active working dirs (multiple folders)
 current_chat_id = None
 
-# -- Storage dir (~/opencode) --
+# -- Storage dir (external storage ~/opencode or app internal as fallback) --
 def get_opencode_dir():
-    base = os.path.expanduser("~")
+    # Check for storage path file written by Android Java
+    possible_paths = [
+        "/data/data/com.opencode.app/files/storage_dir.txt",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage_dir.txt"),
+    ]
+    
+    for storage_file in possible_paths:
+        if os.path.isfile(storage_file):
+            try:
+                with open(storage_file, "r") as f:
+                    external_path = f.read().strip()
+                if external_path and os.path.isdir(external_path):
+                    d = os.path.join(external_path, "opencode")
+                    os.makedirs(d, exist_ok=True)
+                    return d
+            except Exception:
+                pass
+    
+    # Fallback to /storage/emulated/0/opencode on external storage
+    base = "/storage/emulated/0"
+    if not os.path.isdir(base):
+        base = "/sdcard"
+    
     d = os.path.join(base, "opencode")
+    os.makedirs(d, exist_ok=True)
+    return d
+    except Exception:
+        pass
+    
+    # Fallback to Documents/opencode on external storage
+    base = os.path.expanduser("~")
+    if "/data/data" in base:
+        # We're in app sandbox, use external storage instead
+        base = "/storage/emulated/0"
+    
+    d = os.path.join(base, "Documents", "opencode")
     os.makedirs(d, exist_ok=True)
     return d
 

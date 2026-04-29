@@ -39,6 +39,7 @@ public class MainActivity extends Activity {
     private boolean returningFromSettings = false;
     private SharedPreferences prefs;
     private String selectedFolderPath;
+    private String storageFolderPath;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -48,6 +49,29 @@ public class MainActivity extends Activity {
 
         prefs = getSharedPreferences("opencode", MODE_PRIVATE);
         selectedFolderPath = prefs.getString("working_dir", "");
+        storageFolderPath = prefs.getString("storage_dir", "");
+
+        // Default to /storage/emulated/0/opencode folder on external storage
+        if (storageFolderPath == null || storageFolderPath.isEmpty()) {
+            File extStorage = Environment.getExternalStorageDirectory();
+            storageFolderPath = new File(extStorage, "opencode").getAbsolutePath();
+        }
+
+        // Create the storage directory
+        File storageDir = new File(storageFolderPath);
+        if (!storageDir.exists()) {
+            storageDir.mkdirs();
+        }
+
+        // Write storage path to a file in app's private files (accessible by Python)
+        try {
+            File storageFile = new File(getApplicationContext().getFilesDir(), "storage_dir.txt");
+            java.io.FileWriter writer = new java.io.FileWriter(storageFile);
+            writer.write(storageFolderPath);
+            writer.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
 
         setupFullscreen();
         requestFileAccess();
