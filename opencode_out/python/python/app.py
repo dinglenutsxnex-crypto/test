@@ -351,20 +351,23 @@ def tool_write(content, filePath):
 
 
 def _find_busybox():
-    """Find libexec.so (busybox) using Chaquopy android API — no guessing needed."""
-    # Use Chaquopy's built-in android module to ask Android directly
-    # for the native library directory. This is always correct.
-    try:
-        from android.content import Context
-        from android import activity
-        ctx = activity.getApplicationContext()
-        native_lib_dir = ctx.getApplicationInfo().nativeLibraryDir
-        candidate = os.path.join(native_lib_dir, "libexec.so")
-        if os.path.isfile(candidate):
-            return candidate
-    except Exception as e:
-        pass
-
+    """Read busybox path from the file Java wrote to filesDir before starting Python."""
+    # Java writes getFilesDir()/busybox_path.txt in extractBusybox(),
+    # which runs before startFlaskServer(). getFilesDir() on Android is always
+    # /data/user/0/<pkg>/files  (or /data/data/<pkg>/files on older devices).
+    pkg = "com.opencode.app"
+    candidates = [
+        f"/data/user/0/{pkg}/files/busybox_path.txt",
+        f"/data/data/{pkg}/files/busybox_path.txt",
+    ]
+    for path_file in candidates:
+        try:
+            with open(path_file, "r") as f:
+                busybox = f.read().strip()
+            if busybox and os.path.isfile(busybox):
+                return busybox
+        except Exception:
+            continue
     return None
 
 
@@ -764,34 +767,30 @@ def exec_busybox_route():
 
 @app.route("/debug_busybox", methods=["GET"])
 def debug_busybox():
-    """Diagnostic endpoint — shows busybox discovery state."""
+    """Diagnostic endpoint — shows exactly what Java wrote and what Python sees."""
+    pkg = "com.opencode.app"
     info = {}
-    # Try to get native lib dir from Android
-    try:
-        from android.content import Context
-        from android import activity
-        ctx = activity.getApplicationContext()
-        native_lib_dir = ctx.getApplicationInfo().nativeLibraryDir
-        info["native_lib_dir"] = native_lib_dir
-        candidate = os.path.join(native_lib_dir, "libexec.so")
-        info["libexec_path"] = candidate
-        info["libexec_exists"] = os.path.isfile(candidate)
-        if os.path.isfile(candidate):
-            info["libexec_size"] = os.path.getsize(candidate)
-            info["libexec_executable"] = os.access(candidate, os.X_OK)
-    except Exception as e:
-        info["android_api_error"] = str(e)
+
+    # Check both possible filesDir locations
+    for path_file in [
+        f"/data/user/0/{pkg}/files/busybox_path.txt",
+        f"/data/data/{pkg}/files/busybox_path.txt",
+    ]:
+        exists = os.path.isfile(path_file)
+        info[f"path_file:{path_file}"] = "EXISTS" if exists else "missing"
+        if exists:
+            try:
+                with open(path_file) as f:
+                    val = f.read().strip()
+                info[f"path_file_contents"] = val
+                info[f"binary_exists"] = os.path.isfile(val)
+                if os.path.isfile(val):
+                    info["binary_size"] = os.path.getsize(val)
+                    info["binary_executable"] = os.access(val, os.X_OK)
+            except Exception as e:
+                info["read_error"] = str(e)
 
     info["finder_result"] = _find_busybox()
-
-    # List native lib dir contents safely
-    try:
-        nld = info.get("native_lib_dir", "")
-        if nld and os.path.isdir(nld):
-            info["native_lib_dir_contents"] = os.listdir(nld)
-    except Exception as e:
-        info["native_lib_dir_ls_error"] = str(e)
-
     return jsonify(info)
 
 if __name__ == "__main__":

@@ -163,9 +163,6 @@ public class MainActivity extends Activity {
     // We just need to discover that path and write it for Python to read.
 
     private void extractBusybox() {
-        // libexec.so is installed by the package manager into nativeLibraryDir,
-        // which is always exec-allowed. Python finds it via Chaquopy's Android API
-        // so no path file is needed — just log for diagnostics.
         String nativeLibDir = getApplicationInfo().nativeLibraryDir;
         File busyboxFile = new File(nativeLibDir, "libexec.so");
         if (busyboxFile.exists()) {
@@ -175,6 +172,18 @@ public class MainActivity extends Activity {
         } else {
             busyboxPath = "";
             android.util.Log.e("BusyBox", "libexec.so missing from: " + nativeLibDir);
+        }
+        // Write path to filesDir so Python can read it.
+        // This is the ONLY source of truth — done before Python starts.
+        try {
+            File f = new File(getFilesDir(), "busybox_path.txt");
+            java.io.FileWriter fw = new java.io.FileWriter(f, false);
+            fw.write(busyboxPath);
+            fw.flush();
+            fw.close();
+            android.util.Log.i("BusyBox", "Wrote path file: " + f.getAbsolutePath());
+        } catch (Exception e) {
+            android.util.Log.e("BusyBox", "Failed to write path file: " + e.getMessage());
         }
     }
 
