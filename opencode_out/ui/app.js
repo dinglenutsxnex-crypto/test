@@ -549,6 +549,7 @@ function createAssistantShell() {
 
 function sealAssistant(div, text) {
     div.classList.remove('streaming');
+    div.removeAttribute('data-live');
     div.innerHTML = '<span class="msg-prefix">assistant</span>' + parseMarkdown(text);
 }
 

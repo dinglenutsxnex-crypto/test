@@ -11,6 +11,8 @@ from python.compaction import (
     build_compacted_messages_for_api,
     estimate_messages_tokens,
     is_overflow,
+    split_head_tail,
+    generate_summary,
 )
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1033,7 +1035,7 @@ def chat():
                     "content": result,
                 })
 
-        if full_content:
+        if new_rich_turns:
             # Append all new rich turns to persistent history
             for t in new_rich_turns:
                 history.append(t)
@@ -1095,11 +1097,8 @@ def manual_compact():
     previous_summary = chat_summaries.get(chat_id)
 
     # Split head/tail and generate summary unconditionally (bypass is_overflow check)
-    from python.compaction import split_head_tail, generate_summary, build_compacted_messages_for_api as _build
-
     head, tail = split_head_tail(flat, COMPACTION_THRESHOLD, MAX_TOKENS)
     if not head:
-        # Nothing to summarise (too few turns) — just return as-is
         return jsonify({"status": "ok", "compacted": False, "history": history})
 
     summary = generate_summary(API_URL, model, head, previous_summary)
@@ -1113,7 +1112,7 @@ def manual_compact():
         "_compaction": True,
     }
     compacted_flat = [compaction_marker] + tail
-    chat_histories[chat_id] = _build(compacted_flat)
+    chat_histories[chat_id] = build_compacted_messages_for_api(compacted_flat)
 
     return jsonify({
         "status": "ok",
