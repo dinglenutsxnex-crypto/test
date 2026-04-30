@@ -779,6 +779,9 @@ def pencil_prune(chat_id: str, model: str) -> list:
     chat_histories[chat_id] = [t for t in history if t.get("id") not in ids_to_remove]
     actually_removed = [t["id"] for t in history if t.get("id") in ids_to_remove]
     return actually_removed
+
+
+@app.route("/")
 def home():
     return send_file(os.path.join(ROOT, "index.html"))
 
