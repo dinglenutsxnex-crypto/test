@@ -391,3 +391,28 @@ body { display: flex; }
     70%  { opacity: 0.9; }
     100% { opacity: 0; }
 }
+
+/* ── Status banner (pencil / compress notifications) ─────────────────── */
+.status-banner {
+    font-size: 11px;
+    font-family: var(--font);
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin: 8px 0;
+    animation: fadeOut 3.8s ease forwards;
+}
+.status-info {
+    color: var(--text-muted);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+}
+.status-ok {
+    color: #6fbf73;
+    background: rgba(111,191,115,0.08);
+    border: 1px solid rgba(111,191,115,0.25);
+}
+.status-error {
+    color: #e07070;
+    background: rgba(224,112,112,0.08);
+    border: 1px solid rgba(224,112,112,0.25);
+}

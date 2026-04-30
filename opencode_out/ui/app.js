@@ -39,6 +39,7 @@ const chatMenuBtn  = document.getElementById('chat-menu-btn');
 const chatMenu     = document.getElementById('chat-menu');
 const renameChatBtn= document.getElementById('rename-chat-btn');
 const deleteChatBtn= document.getElementById('delete-chat-btn');
+const compressChatBtn = document.getElementById('compress-chat-btn');
 const renameModal  = document.getElementById('rename-modal');
 const renameInput  = document.getElementById('rename-input');
 const renameCancel = document.getElementById('rename-cancel');
@@ -374,6 +375,56 @@ deleteChatBtn.onclick = async (e) => {
     await saveChats();
     location.reload();
 };
+
+compressChatBtn.onclick = async (e) => {
+    e.stopPropagation();
+    chatMenu.classList.add('hidden');
+    const chat = activeChat();
+    if (!chat) return;
+
+    showStatusBanner('✦ Compressing chat…', 'info');
+
+    try {
+        const resp = await fetch('/compact', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chat.id, model: selectedModel })
+        });
+        const data = await resp.json();
+
+        if (data.history) {
+            chat.history = data.history;
+            await saveChats();
+            renderHistory();
+            updateContextBadge();
+        }
+
+        const parts = [];
+        if (data.pencil_removed && data.pencil_removed.length)
+            parts.push(`Pencil removed ${data.pencil_removed.length} turn(s)`);
+        if (data.compacted)
+            parts.push('history summarised');
+        const msg = parts.length ? '✓ ' + parts.join(' · ') : '✓ Nothing to compress';
+        showStatusBanner(msg, 'ok');
+    } catch (err) {
+        showStatusBanner('⚠ Compression failed: ' + err.message, 'error');
+    }
+};
+
+// ── Status banner (pencil / compact notifications) ─────────────────────
+function showStatusBanner(text, kind = 'info') {
+    // Remove any existing banner
+    const old = document.getElementById('status-banner');
+    if (old) old.remove();
+
+    const el = document.createElement('div');
+    el.id = 'status-banner';
+    el.className = 'status-banner status-' + kind;
+    el.textContent = text;
+    chatEl.appendChild(el);
+    scrollBottom();
+    setTimeout(() => el.remove(), 4000);
+}
 
 // ── Sidebar toggle ────────────────────────────────────────────────────
 menuBtn.onclick = () => sidebar.classList.toggle('collapsed');
@@ -712,6 +763,19 @@ async function send() {
                         break;
                     }
                     case 'heartbeat': {
+                        break;
+                    }
+                    case 'pencil_start': {
+                        if (isActive()) showStatusBanner('✦ Pencil pruning…', 'info');
+                        break;
+                    }
+                    case 'pencil_done': {
+                        if (chat) {
+                            // history_update will arrive right after; just show notification
+                            const n = (ev.removed || []).length;
+                            if (isActive() && n > 0)
+                                showStatusBanner(`✓ Pencil removed ${n} redundant turn(s)`, 'ok');
+                        }
                         break;
                     }
                     case 'history_update': {

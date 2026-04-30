@@ -19,12 +19,74 @@ app = Flask(__name__, template_folder=ROOT, static_folder=ROOT + '/ui')
 # ── Per-chat state (replaces single global `history`) ─────────────────
 # Each chat_id gets its own history list and compaction summary.
 # This allows multiple chats to stream concurrently without clobbering.
-chat_histories  = {}   # chat_id -> list of messages
+chat_histories  = {}   # chat_id -> list of rich turn objects (see turn schema below)
 chat_summaries  = {}   # chat_id -> previous compaction summary string
+chat_msg_counts = {}   # chat_id -> int, total messages since last pencil prune
+
+# ── Rich turn / message schema ─────────────────────────────────────────
+# Each item in chat_histories[chat_id] is ONE of:
+#
+#   User turn:
+#   { "id": "u_<n>", "role": "user", "content": "..." }
+#
+#   Assistant turn:
+#   { "id": "a_<n>", "role": "assistant", "content": "...",
+#     "reasoning_content": "..." or null,
+#     "tool_calls": [
+#       { "id": "tc_<n>", "type": "function",
+#         "function": { "name": "...", "arguments": "..." } }
+#     ] or []
+#   }
+#
+#   Tool result:
+#   { "id": "tr_<n>", "role": "tool",
+#     "tool_call_id": "tc_<n>", "content": "..." }
+#
+# The "id" on every object is unique within the chat so the Pencil overseer
+# can reference items by ID and ask the backend to remove them.
 
 working_dir  = WORKING_DIR
 working_dirs = []
 current_chat_id = None   # kept for compat; not used for history lookup
+
+# ── ID generation ──────────────────────────────────────────────────────
+def _next_id(chat_id: str, prefix: str) -> str:
+    """Generate a sequential ID unique within a chat, e.g. 'a_7', 'tc_12'."""
+    key = f"__seq_{chat_id}"
+    n = chat_msg_counts.get(key, 0) + 1
+    chat_msg_counts[key] = n
+    return f"{prefix}_{n}"
+
+# ── Convert rich history to the flat list the API expects ──────────────
+def history_to_api_messages(history: list) -> list:
+    """
+    Convert our rich turn objects into the OpenAI-compatible messages list.
+    - assistant turns: emit reasoning_content field if present (some providers
+      use it for context continuity), plus tool_calls if any.
+    - tool result turns: emit as role=tool with tool_call_id.
+    - user turns: pass through as-is.
+    """
+    out = []
+    for turn in history:
+        role = turn.get("role")
+        if role == "user":
+            out.append({"role": "user", "content": turn.get("content", "")})
+        elif role == "assistant":
+            msg = {"role": "assistant", "content": turn.get("content", "") or ""}
+            rc = turn.get("reasoning_content")
+            if rc:
+                msg["reasoning_content"] = rc
+            tcs = turn.get("tool_calls")
+            if tcs:
+                msg["tool_calls"] = tcs
+            out.append(msg)
+        elif role == "tool":
+            out.append({
+                "role": "tool",
+                "tool_call_id": turn.get("tool_call_id", ""),
+                "content": turn.get("content", ""),
+            })
+    return out
 
 # -- Storage dir --
 def get_opencode_dir():
@@ -613,7 +675,110 @@ def run_tool(name, args):
     return f"Unknown tool: {name}"
 
 
-@app.route("/")
+# ── Pencil Architecture ────────────────────────────────────────────────
+# Every 4 assistant replies a lightweight overseer AI scans the rich
+# history and returns a JSON list of turn IDs to remove.  We then
+# scrub those IDs from the in-memory history while preserving referential
+# integrity (if a tool-call turn is removed, its paired tool-result is
+# also removed; if a tool-result is orphaned it is removed too).
+
+PENCIL_SYSTEM = """You are a conversation history editor (the "Pencil").
+Your job is to identify REDUNDANT or WASTEFUL turns in an AI coding assistant's
+chat history so they can be pruned to save context tokens.
+
+You will receive a JSON array of turns.  Each turn has an "id" field and one of:
+  - role "user"       → content string
+  - role "assistant"  → content string, optional reasoning_content, optional tool_calls array
+  - role "tool"       → tool_call_id, content (the tool's output)
+
+Identify turns whose IDs should be REMOVED based on these rules (in priority order):
+1. Reasoning turns where reasoning_content is present but the assistant reversed or
+   contradicted its conclusion in a later message (e.g. said yes then no then yes).
+   Remove the earlier contradicted reasoning and/or assistant message.
+2. Tool-call + tool-result pairs where the tool result was never actually referenced
+   or used in the final assistant answer (the information was fetched but discarded).
+3. Repeated assistant messages that say essentially the same thing as a later message.
+4. Do NOT remove the most recent user or assistant message.
+5. Do NOT remove a tool-result unless you also remove its paired assistant turn that
+   called it (or it is already orphaned).
+6. Be conservative — when in doubt, KEEP the turn.
+
+Respond with ONLY a JSON object in this exact format (no markdown, no preamble):
+{"remove": ["id1", "id2", ...]}
+
+If nothing should be removed respond with: {"remove": []}
+"""
+
+def pencil_prune(chat_id: str, model: str) -> list:
+    """
+    Call the overseer LLM to identify redundant turns, then remove them.
+    Returns the list of IDs actually removed.
+    """
+    history = chat_histories.get(chat_id, [])
+    if len(history) < 6:
+        return []  # too short to bother
+
+    # Send the full rich history as JSON context to the overseer
+    history_json = json.dumps(history, ensure_ascii=False)
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": history_json}
+        ],
+        "system": PENCIL_SYSTEM,
+        "stream": False,
+        "max_tokens": 512,
+    }
+
+    try:
+        resp = requests.post(API_URL, json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        choices = data.get("choices") or []
+        if not choices:
+            return []
+        raw = choices[0].get("message", {}).get("content", "")
+        parsed = json.loads(raw.strip())
+        ids_to_remove = set(parsed.get("remove", []))
+    except Exception:
+        return []
+
+    if not ids_to_remove:
+        return []
+
+    # Integrity pass: if we're removing an assistant turn that has tool_calls,
+    # also mark its paired tool-result turns for removal.
+    extra = set()
+    for turn in history:
+        if turn.get("id") in ids_to_remove and turn.get("role") == "assistant":
+            for tc in turn.get("tool_calls", []):
+                tc_id = tc.get("id")
+                for tr in history:
+                    if tr.get("role") == "tool" and tr.get("tool_call_id") == tc_id:
+                        extra.add(tr["id"])
+    ids_to_remove |= extra
+
+    # Integrity pass: orphaned tool-result turns (their caller was already removed)
+    caller_ids = {
+        tc.get("id")
+        for turn in history
+        for tc in turn.get("tool_calls", [])
+        if turn.get("id") not in ids_to_remove
+    }
+    for turn in history:
+        if turn.get("role") == "tool" and turn.get("tool_call_id") not in caller_ids:
+            ids_to_remove.add(turn["id"])
+
+    # Never remove the last user or last assistant message
+    last_user = next((t["id"] for t in reversed(history) if t.get("role") == "user"), None)
+    last_asst = next((t["id"] for t in reversed(history) if t.get("role") == "assistant"), None)
+    ids_to_remove.discard(last_user)
+    ids_to_remove.discard(last_asst)
+
+    before = len(history)
+    chat_histories[chat_id] = [t for t in history if t.get("id") not in ids_to_remove]
+    actually_removed = [t["id"] for t in history if t.get("id") in ids_to_remove]
+    return actually_removed
 def home():
     return send_file(os.path.join(ROOT, "index.html"))
 
@@ -686,7 +851,8 @@ def chat():
 
     # Work on a reference to this chat's history list
     history = chat_histories[chat_id]
-    history.append({"role": "user", "content": user_msg})
+    # Rich user turn with stable ID
+    history.append({"id": _next_id(chat_id, "u"), "role": "user", "content": user_msg})
 
     dirs = working_dirs if working_dirs else ([working_dir] if working_dir else [])
     if dirs:
@@ -705,13 +871,17 @@ def chat():
     def generate():
         import time
         full_content = ""
+        full_reasoning = ""
         last_heartbeat = time.time()
 
         # Use per-chat compaction summary
         previous_summary = chat_summaries.get(chat_id)
 
+        # Convert rich history to flat API messages
+        flat_history = history_to_api_messages(list(history))
+
         compacted, new_summary, did_compact = compact_messages(
-            messages=list(history),
+            messages=flat_history,
             system_messages=[system_msg],
             api_url=API_URL,
             model=model,
@@ -724,6 +894,10 @@ def chat():
             yield f"data: {json.dumps({'type': 'compaction', 'text': 'Context compacted.'})}\n\n"
 
         messages = [system_msg] + build_compacted_messages_for_api(compacted)
+
+        # Accumulate all rich turns produced this response so we can
+        # append them to history atomically at the end.
+        new_rich_turns = []
 
         for _round in range(1000):
             payload = {
@@ -744,6 +918,7 @@ def chat():
 
             tool_calls_acc = {}
             round_content = ""
+            round_reasoning = ""
 
             for raw in api_resp.iter_lines():
                 if not raw:
@@ -767,6 +942,8 @@ def chat():
 
                 thinking_chunk = delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking") or ""
                 if thinking_chunk:
+                    round_reasoning += thinking_chunk
+                    full_reasoning += thinking_chunk
                     yield f"data: {json.dumps({'type': 'thinking', 'text': thinking_chunk})}\n\n"
 
                 content_chunk = delta.get("content") or ""
@@ -788,21 +965,45 @@ def chat():
                         tool_calls_acc[idx]["arguments"] += fn["arguments"]
 
             if not tool_calls_acc:
+                # No more tool calls — this is the final assistant turn
+                rich_asst = {
+                    "id": _next_id(chat_id, "a"),
+                    "role": "assistant",
+                    "content": full_content,
+                    "reasoning_content": full_reasoning or None,
+                    "tool_calls": [],
+                }
+                new_rich_turns.append(rich_asst)
                 break
 
+            # Build tool-call list; reuse provider-issued IDs
             tc_list = []
             for idx in sorted(tool_calls_acc.keys()):
                 tc = tool_calls_acc[idx]
+                tc_id = tc["id"] or _next_id(chat_id, "tc")
                 tc_list.append({
-                    "id": tc["id"] or f"call_{idx}",
+                    "id": tc_id,
                     "type": "function",
                     "function": {"name": tc["name"], "arguments": tc["arguments"]}
                 })
 
-            asst_msg = {"role": "assistant", "tool_calls": tc_list}
+            # Rich assistant turn (intermediate — has tool_calls)
+            rich_asst = {
+                "id": _next_id(chat_id, "a"),
+                "role": "assistant",
+                "content": round_content or "",
+                "reasoning_content": round_reasoning or None,
+                "tool_calls": tc_list,
+            }
+            new_rich_turns.append(rich_asst)
+
+            # Flat message for next API round
+            flat_asst = {"role": "assistant", "tool_calls": tc_list}
             if round_content:
-                asst_msg["content"] = round_content
-            messages.append(asst_msg)
+                flat_asst["content"] = round_content
+            if round_reasoning:
+                flat_asst["reasoning_content"] = round_reasoning
+            messages.append(flat_asst)
 
             for tc in tc_list:
                 fn_name = tc["function"]["name"]
@@ -815,19 +1016,39 @@ def chat():
                 result = run_tool(fn_name, args)
                 yield f"data: {json.dumps({'type': 'tool_done', 'name': fn_name})}\n\n"
 
+                # Rich tool-result turn
+                tr_turn = {
+                    "id": _next_id(chat_id, "tr"),
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": result,
+                }
+                new_rich_turns.append(tr_turn)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
-                    "content": result
+                    "content": result,
                 })
 
         if full_content:
-            # Write back to the per-chat history (not a global)
-            history.append({"role": "assistant", "content": full_content})
+            # Append all new rich turns to persistent history
+            for t in new_rich_turns:
+                history.append(t)
+
             if len(history) > 40:
                 chat_histories[chat_id] = history[-40:]
             else:
                 chat_histories[chat_id] = history
+
+            # ── Pencil Architecture trigger (every 4 assistant replies) ──
+            cnt = chat_msg_counts.get(chat_id, 0) + 1
+            chat_msg_counts[chat_id] = cnt
+            if cnt % 4 == 0:
+                yield f"data: {json.dumps({'type': 'pencil_start'})}\n\n"
+                removed_ids = pencil_prune(chat_id, model)
+                if removed_ids:
+                    yield f"data: {json.dumps({'type': 'pencil_done', 'removed': removed_ids})}\n\n"
+
             yield f"data: {json.dumps({'type': 'history_update', 'history': chat_histories[chat_id]})}\n\n"
 
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
@@ -849,7 +1070,88 @@ def clear():
     chat_id = data.get("chat_id", "default")
     chat_histories.pop(chat_id, None)
     chat_summaries.pop(chat_id, None)
+    chat_msg_counts.pop(chat_id, None)
     return jsonify({"status": "cleared"})
+
+
+@app.route("/compact", methods=["POST"])
+def manual_compact():
+    """
+    Manual 'Compress Chat' triggered by the user from the ⋯ menu.
+    Runs BOTH the Pencil prune pass AND the compaction summary pass
+    so the user gets a full clean-up in one shot.
+    """
+    data = request.json or {}
+    chat_id = data.get("chat_id", "default")
+    model   = data.get("model", MODEL)
+
+    if chat_id not in chat_histories:
+        return jsonify({"status": "ok", "pencil_removed": [], "compacted": False})
+
+    # 1. Pencil prune first
+    removed_ids = pencil_prune(chat_id, model)
+
+    # 2. Then run compaction summary on the pruned history
+    history = chat_histories.get(chat_id, [])
+    flat    = history_to_api_messages(history)
+    previous_summary = chat_summaries.get(chat_id)
+
+    compacted, new_summary, did_compact = compact_messages(
+        messages=flat,
+        system_messages=[{"role": "system", "content": "Compression request."}],
+        api_url=API_URL,
+        model=model,
+        previous_summary=previous_summary,
+        context_limit=COMPACTION_THRESHOLD,
+        max_output_tokens=MAX_TOKENS,
+    )
+    if did_compact:
+        chat_summaries[chat_id] = new_summary
+        # Replace in-memory history with the compacted flat form
+        # Re-wrap as rich turns so structure is preserved
+        chat_histories[chat_id] = build_compacted_messages_for_api(compacted)
+
+    return jsonify({
+        "status": "ok",
+        "pencil_removed": removed_ids,
+        "compacted": did_compact,
+        "history": chat_histories.get(chat_id, []),
+    })
+
+
+@app.route("/pencil_remove", methods=["POST"])
+def pencil_remove():
+    """
+    Allow the frontend (or external overseer) to explicitly delete turns by ID.
+    Body: { "chat_id": "...", "ids": ["a_3", "tr_4", ...] }
+    """
+    data = request.json or {}
+    chat_id = data.get("chat_id", "default")
+    ids_to_remove = set(data.get("ids", []))
+
+    history = chat_histories.get(chat_id, [])
+    if not history or not ids_to_remove:
+        return jsonify({"status": "ok", "removed": []})
+
+    # Same integrity logic as pencil_prune
+    extra = set()
+    for turn in history:
+        if turn.get("id") in ids_to_remove and turn.get("role") == "assistant":
+            for tc in turn.get("tool_calls", []):
+                tc_id = tc.get("id")
+                for tr in history:
+                    if tr.get("role") == "tool" and tr.get("tool_call_id") == tc_id:
+                        extra.add(tr["id"])
+    ids_to_remove |= extra
+
+    actually_removed = [t["id"] for t in history if t.get("id") in ids_to_remove]
+    chat_histories[chat_id] = [t for t in history if t.get("id") not in ids_to_remove]
+
+    return jsonify({
+        "status": "ok",
+        "removed": actually_removed,
+        "history": chat_histories[chat_id],
+    })
 
 
 @app.route("/working_dirs", methods=["POST"])
@@ -876,6 +1178,18 @@ def switch_chat():
         chat_histories[chat_id] = data.get("history", [])
         if "summary" in data:
             chat_summaries[chat_id] = data["summary"]
+        # Restore message counter from history so pencil trigger stays accurate
+        asst_count = sum(1 for t in chat_histories[chat_id] if t.get("role") == "assistant")
+        chat_msg_counts[chat_id] = asst_count
+        # Restore ID sequence counter from max existing ID number
+        max_seq = 0
+        for t in chat_histories[chat_id]:
+            tid = t.get("id", "")
+            parts = tid.split("_")
+            if len(parts) == 2 and parts[1].isdigit():
+                max_seq = max(max_seq, int(parts[1]))
+        seq_key = f"__seq_{chat_id}"
+        chat_msg_counts[seq_key] = max(chat_msg_counts.get(seq_key, 0), max_seq)
     return jsonify({"status": "ok"})
 
 
