@@ -23,6 +23,7 @@ app = Flask(__name__, template_folder=ROOT, static_folder=ROOT + '/ui')
 # This allows multiple chats to stream concurrently without clobbering.
 chat_histories  = {}   # chat_id -> list of rich turn objects (see turn schema below)
 chat_summaries  = {}   # chat_id -> previous compaction summary string
+chat_msg_counts = {}   # chat_id -> sequence counter for turn ID generation
 
 # ── Rich turn / message schema ─────────────────────────────────────────
 # Each item in chat_histories[chat_id] is ONE of:
