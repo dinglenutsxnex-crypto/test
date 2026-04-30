@@ -62,6 +62,32 @@
 
         <div id="model-bar">
             <span class="model-bar-label">model</span>
+            <div class="agent-selector-wrap">
+                <button id="agent-btn" class="agent-btn" title="Switch agent mode">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+                    <span id="agent-label">build</span>
+                    <svg class="model-chevron" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div id="agent-dropdown" class="agent-dropdown hidden">
+                    <div class="model-dropdown-label">Agent Mode</div>
+                    <button class="agent-option active" data-agent="build">
+                        <span class="agent-name">build</span>
+                        <span class="agent-desc">Full access — code, write, run commands</span>
+                    </button>
+                    <button class="agent-option" data-agent="plan">
+                        <span class="agent-name">plan</span>
+                        <span class="agent-desc">Read-only analysis — no file writes</span>
+                    </button>
+                    <button class="agent-option" data-agent="explore">
+                        <span class="agent-name">explore</span>
+                        <span class="agent-desc">Search &amp; read only — fast codebase nav</span>
+                    </button>
+                    <button class="agent-option" data-agent="ask">
+                        <span class="agent-name">ask</span>
+                        <span class="agent-desc">No tools — pure Q&amp;A, no file access</span>
+                    </button>
+                </div>
+            </div>
             <div class="model-selector-wrap">
                 <button id="model-btn" class="model-btn">
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
@@ -78,6 +104,7 @@
                     <button class="model-option" data-model="mimo-v2-pro-free" data-label="mimo-v2-pro" data-ctx="32768">mimo-v2-pro</button>
                     <button class="model-option" data-model="nemotron-3-super-free" data-label="nemotron-3-super" data-ctx="128000">nemotron-3-super</button>
                 </div>
+            </div>
             </div>
         </div>
     </div>

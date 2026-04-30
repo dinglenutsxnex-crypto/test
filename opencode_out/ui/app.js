@@ -10,6 +10,7 @@ const chatStreamState = {};
 
 let selectedModel = 'minimax-m2.5-free';
 let selectedModelCtx = 1000000;
+let selectedAgent = 'build';  // build | plan | explore | ask
 
 function formatCtx(n) {
     if (n >= 1000000) return (n / 1000000).toFixed(0) + 'M';
@@ -329,6 +330,7 @@ document.addEventListener('click', () => {
     chatMenu.classList.add('hidden');
     modelDropdown.classList.add('hidden');
     modelBtn.classList.remove('open');
+    if (agentDropdown) { agentDropdown.classList.add('hidden'); agentBtn.classList.remove('open'); }
 });
 
 renameChatBtn.onclick = (e) => {
@@ -448,6 +450,31 @@ modelDropdown.querySelectorAll('.model-option').forEach(btn => {
         modelDropdown.classList.add('hidden');
         modelBtn.classList.remove('open');
         updateContextBadge();
+    };
+});
+
+// ── Agent selector ────────────────────────────────────────────────────
+const agentBtn      = document.getElementById('agent-btn');
+const agentLabel    = document.getElementById('agent-label');
+const agentDropdown = document.getElementById('agent-dropdown');
+
+agentBtn.onclick = (e) => {
+    e.stopPropagation();
+    const isHidden = agentDropdown.classList.toggle('hidden');
+    agentBtn.classList.toggle('open', !isHidden);
+    modelDropdown.classList.add('hidden');
+    modelBtn.classList.remove('open');
+};
+agentDropdown.querySelectorAll('.agent-option').forEach(btn => {
+    btn.onclick = (e) => {
+        e.stopPropagation();
+        selectedAgent = btn.dataset.agent;
+        agentLabel.textContent = selectedAgent;
+        agentDropdown.querySelectorAll('.agent-option').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        agentDropdown.classList.add('hidden');
+        agentBtn.classList.remove('open');
+        showStatusBanner('Agent: ' + selectedAgent, 'info');
     };
 });
 
@@ -687,6 +714,17 @@ async function send() {
     // Show user message only if we are still looking at this chat
     if (isActive()) addUserMsg(userMsg);
 
+    // Immediately persist a snapshot so closing the app right after sending
+    // doesn't lose the user's message. We write a _pending flag so that
+    // history_update (which arrives at stream end) overwrites it cleanly.
+    if (chat) {
+        const snapshot = [...(chat.history || []), { id: 'u_pending_' + Date.now(), role: 'user', content: userMsg, _pending: true }];
+        const prevHistory = chat.history;
+        chat.history = snapshot;
+        saveChats();
+        chat.history = prevHistory;  // restore so the real history_update wins
+    }
+
     autoTitle(sendingChatId, userMsg);
 
     // Mark this chat as busy
@@ -714,6 +752,7 @@ async function send() {
             body: JSON.stringify({
                 message: userMsg,
                 model: selectedModel,
+                agent: selectedAgent,
                 chat_id: sendingChatId          // tell backend which chat this belongs to
             })
         });

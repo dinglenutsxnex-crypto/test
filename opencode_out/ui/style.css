@@ -304,6 +304,49 @@ body { display: flex; }
 .model-option.active { color: var(--purple); }
 .model-option.active::before { background: var(--purple); box-shadow: 0 0 6px var(--purple); }
 
+/* ─── Agent selector ────────────────────────────────────── */
+.agent-selector-wrap { position: relative; }
+
+.agent-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 11px 5px 9px;
+    background: var(--surface2);
+    border: 1px solid var(--border-mid);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted); font-size: 12.5px; font-family: var(--font);
+    cursor: pointer; transition: all .15s;
+}
+.agent-btn svg:first-child { color: var(--teal); opacity: .8; flex-shrink: 0; }
+.agent-btn:hover { border-color: var(--teal); color: var(--text); background: var(--surface3); }
+.agent-btn:hover .model-chevron { color: var(--teal); }
+.agent-btn.open .model-chevron { transform: rotate(180deg); }
+
+.agent-dropdown {
+    position: absolute;
+    bottom: calc(100% + 6px); left: 0;
+    background: var(--surface2);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    min-width: 240px;
+    box-shadow: var(--shadow);
+    z-index: 300; overflow: hidden;
+    animation: dropUp .14s cubic-bezier(.2,0,.2,1) both;
+}
+.agent-dropdown.hidden { display: none; }
+
+.agent-option {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+    width: 100%; text-align: left;
+    background: none; border: none;
+    color: var(--text-muted); font-size: 13px; font-family: var(--font);
+    padding: 9px 12px; cursor: pointer; transition: all .1s;
+    border-left: 2px solid transparent;
+}
+.agent-option:hover { background: var(--surface3); color: var(--text); border-left-color: var(--teal); }
+.agent-option.active { color: var(--teal); border-left-color: var(--teal); background: rgba(0,200,180,.05); }
+.agent-name { font-weight: 600; font-size: 12.5px; }
+.agent-desc { font-size: 10.5px; color: var(--text-dim); }
+
 /* ─── Animations ────────────────────────────────────────── */
 @keyframes dropUp { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
 @keyframes dropIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:none; } }

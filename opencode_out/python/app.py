@@ -137,6 +137,74 @@ def is_within_dir(path, dir_path):
     abs_dir = os.path.abspath(dir_path)
     return abs_path.startswith(abs_dir + os.sep) or abs_path == abs_dir
 
+# ── Agent profiles ─────────────────────────────────────────────────────
+# Each profile defines a system prompt suffix and which tools are allowed.
+# Inspired by opencode's build / plan / explore / ask agents.
+AGENT_PROFILES = {
+    "build": {
+        "description": "Default full-access agent for development work.",
+        "system_suffix": (
+            "You are in BUILD mode — a full-access coding agent.\n"
+            "You can read, write, edit files, run shell commands, search the web, and explore GitHub repos.\n"
+            "Be proactive: fix bugs, write code, and complete tasks end-to-end.\n"
+            "NEVER revert changes you didn't make. Prefer surgical edits over full rewrites."
+        ),
+        "allowed_tools": None,  # None = all tools allowed
+        "denied_tools": [],
+    },
+    "plan": {
+        "description": "Read-only analysis agent — no file writes or shell commands.",
+        "system_suffix": (
+            "You are in PLAN mode — a restricted read-only agent for analysis and planning.\n"
+            "You MAY use: read, glob, grep, web_search, web_fetch, github_walk.\n"
+            "You MUST NOT write, edit, or run shell commands.\n"
+            "Your job is to analyze code, explain changes that SHOULD be made, and produce detailed plans.\n"
+            "State your plan clearly in numbered steps. Do not execute the plan."
+        ),
+        "allowed_tools": None,
+        "denied_tools": ["write", "edit", "shell"],
+    },
+    "explore": {
+        "description": "Fast read-only codebase search — grep, glob, read only.",
+        "system_suffix": (
+            "You are in EXPLORE mode — a fast, read-only codebase search agent.\n"
+            "You MAY use: read, glob, grep, github_walk.\n"
+            "You MUST NOT use web_search, web_fetch, write, edit, or shell.\n"
+            "Focus on quickly finding files, locating code patterns, and answering structural questions about the codebase.\n"
+            "Be concise and precise. Return file paths and line numbers where relevant."
+        ),
+        "allowed_tools": ["read", "glob", "grep", "github_walk"],
+        "denied_tools": [],
+    },
+    "ask": {
+        "description": "Pure Q&A — no tools, no file access.",
+        "system_suffix": (
+            "You are in ASK mode — a pure question-answering assistant with NO tool access.\n"
+            "Do not attempt to use any tools. Answer entirely from your own knowledge.\n"
+            "If a question requires inspecting code or files, explain that the user should switch to build or explore mode."
+        ),
+        "allowed_tools": [],  # Empty list = no tools at all
+        "denied_tools": [],
+    },
+}
+
+def get_tools_for_agent(agent_name: str) -> list:
+    """Return the filtered TOOLS list for the given agent profile."""
+    profile = AGENT_PROFILES.get(agent_name, AGENT_PROFILES["build"])
+    allowed = profile.get("allowed_tools")
+    denied  = profile.get("denied_tools", [])
+    if allowed is not None and len(allowed) == 0:
+        return []  # ask mode: no tools
+    filtered = []
+    for tool in TOOLS:
+        name = tool["function"]["name"]
+        if allowed is not None and name not in allowed:
+            continue
+        if name in denied:
+            continue
+        filtered.append(tool)
+    return filtered
+
 TOOLS = [
     {
         "type": "function",
@@ -742,6 +810,7 @@ def chat():
     data = request.json
     user_msg  = data.get("message", "")
     model     = data.get("model", MODEL)
+    agent_name = data.get("agent", "build")
     # Use the chat_id sent by the frontend to look up the correct per-chat history.
     # Falls back to "default" so old clients still work.
     chat_id   = data.get("chat_id", "default")
@@ -752,41 +821,31 @@ def chat():
 
     # Work on a reference to this chat's history list
     history = chat_histories[chat_id]
-    # Rich user turn with stable ID
-    history.append({"id": _next_id(chat_id, "u"), "role": "user", "content": user_msg})
 
-    import datetime as _dt
+    # Dedup guard: if the last turn is already this exact user message (e.g. from
+    # a switch_chat reload that already seeded the history), don't append again.
+    # This prevents the model seeing duplicate user turns and looping.
+    last = history[-1] if history else None
+    if not (last and last.get("role") == "user" and last.get("content") == user_msg):
+        history.append({"id": _next_id(chat_id, "u"), "role": "user", "content": user_msg})
+
     dirs = working_dirs if working_dirs else ([working_dir] if working_dir else [])
+    agent_profile = AGENT_PROFILES.get(agent_name, AGENT_PROFILES["build"])
+    agent_suffix  = agent_profile["system_suffix"]
+    active_tools  = get_tools_for_agent(agent_name)
+
     if dirs:
         hints = []
         for d in dirs:
             try:
                 files = sorted(os.listdir(d))[:30]
-                hints.append(f'<folder path="{d}">\n' + "\n".join(files) + "\n</folder>")
+                hints.append(f"Folder: {d}\nContents:\n" + "\n".join(files))
             except Exception:
-                hints.append(f'<folder path="{d}" status="unreadable"/>')
-        dir_info = "\n".join(hints)
-        today = _dt.date.today()
-        system_content = f"""You are an expert software engineer and coding assistant running on Android.
-
-<env>
-  Platform: Android
-  Today: {today}
-  Working directories ({len(dirs)}):
-{dir_info}
-</env>
-
-# Rules
-- Be concise. Under 4 lines unless complexity demands more.
-- Do NOT explain what you are about to do — just do it.
-- Do NOT add summaries or postamble after completing a task.
-- ALWAYS ask for confirmation before editing, creating, or deleting any file. State the exact change, wait for yes.
-- All file paths are relative to the working directories above. Never access paths outside them.
-- If a task is ambiguous, ask one clarifying question before acting.
-- No filler, praise, or disclaimers unless safety-critical."""
-        system_msg = {"role": "system", "content": system_content}
+                hints.append(f"Folder: {d} (unreadable)")
+        dir_info = "\n\n".join(hints)
+        system_msg = {"role": "system", "content": f"You have access to {len(dirs)} project folder(s):\n\n{dir_info}\n\nAlways use tools relative to these directories. Never navigate above them.\n\n---\n{agent_suffix}"}
     else:
-        system_msg = {"role": "system", "content": "No working directory set. Ask the user to select a project folder before proceeding."}
+        system_msg = {"role": "system", "content": f"No working directory set. Ask user to select a project folder first.\n\n---\n{agent_suffix}"}
 
     def generate():
         import time
@@ -824,10 +883,11 @@ def chat():
                 "model": model,
                 "messages": messages,
                 "stream": True,
-                "tools": TOOLS,
-                "tool_choice": "auto",
                 "max_tokens": MAX_TOKENS
             }
+            if active_tools:
+                payload["tools"] = active_tools
+                payload["tool_choice"] = "auto"
 
             try:
                 api_resp = requests.post(API_URL, json=payload, stream=True, timeout=600)
@@ -1048,7 +1108,10 @@ def switch_chat():
     # Seed per-chat history from the saved data the frontend sends.
     # This keeps the backend in sync when loading persisted chats.
     if chat_id:
-        chat_histories[chat_id] = data.get("history", [])
+        raw_history = data.get("history", [])
+        # Strip any _pending preview turns written by the frontend before the stream completed.
+        # Real turns from history_update never have _pending set.
+        chat_histories[chat_id] = [t for t in raw_history if not t.get("_pending")]
         if "summary" in data:
             chat_summaries[chat_id] = data["summary"]
         # Restore ID sequence counter from max existing ID number
