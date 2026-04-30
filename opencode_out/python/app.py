@@ -16,20 +16,22 @@ from python.compaction import (
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 app = Flask(__name__, template_folder=ROOT, static_folder=ROOT + '/ui')
 
-history = []
-working_dir = WORKING_DIR   # kept for compat; primary dirs below
-working_dirs = []           # list of active working dirs (multiple folders)
-current_chat_id = None
-previous_summary = None     # persists the last compaction summary across requests
+# ── Per-chat state (replaces single global `history`) ─────────────────
+# Each chat_id gets its own history list and compaction summary.
+# This allows multiple chats to stream concurrently without clobbering.
+chat_histories  = {}   # chat_id -> list of messages
+chat_summaries  = {}   # chat_id -> previous compaction summary string
 
-# -- Storage dir (external storage ~/opencode or app internal as fallback) --
+working_dir  = WORKING_DIR
+working_dirs = []
+current_chat_id = None   # kept for compat; not used for history lookup
+
+# -- Storage dir --
 def get_opencode_dir():
-    # Check for storage path file written by Android Java
     possible_paths = [
         "/data/data/com.opencode.app/files/storage_dir.txt",
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage_dir.txt"),
     ]
-    
     for storage_file in possible_paths:
         if os.path.isfile(storage_file):
             try:
@@ -41,12 +43,9 @@ def get_opencode_dir():
                     return d
             except Exception:
                 pass
-    
-    # Fallback to /storage/emulated/0/opencode on external storage
     base = "/storage/emulated/0"
     if not os.path.isdir(base):
         base = "/sdcard"
-    
     d = os.path.join(base, "opencode")
     os.makedirs(d, exist_ok=True)
     return d
@@ -233,7 +232,6 @@ def strip_html(html):
     return html.strip()
 
 def _android_webview_fetch(url):
-    """Fetch URL via the hidden Android WebView — real browser, bypasses bot detection."""
     try:
         from com.opencode.app import MainActivity
         activity = MainActivity.instance
@@ -251,7 +249,6 @@ def websearch(query, num_results=8):
     import urllib.parse
     encoded = urllib.parse.quote(query)
 
-    # 1. Android WebView — real browser, best bot-detection bypass
     html = _android_webview_fetch(f"https://html.duckduckgo.com/html/?q={encoded}")
     if html:
         titles   = re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, re.DOTALL)
@@ -270,7 +267,6 @@ def websearch(query, num_results=8):
                 lines.append("")
             return "\n".join(lines)
 
-    # 2. Jina search API
     try:
         resp = requests.get(
             f"https://s.jina.ai/?q={encoded}",
@@ -282,7 +278,6 @@ def websearch(query, num_results=8):
     except Exception:
         pass
 
-    # 3. DuckDuckGo raw request (last resort)
     try:
         resp = requests.get(
             "https://html.duckduckgo.com/html/",
@@ -311,12 +306,10 @@ def websearch(query, num_results=8):
 
 
 def webfetch(url):
-    # 1. Android WebView — renders JS, real browser UA
     html = _android_webview_fetch(url)
     if html:
         return strip_html(html)[:30000]
 
-    # 2. Jina Reader API — clean markdown, also renders JS
     try:
         resp = requests.get(
             f"https://r.jina.ai/{url}",
@@ -328,7 +321,6 @@ def webfetch(url):
     except Exception:
         pass
 
-    # 3. Raw request + strip HTML
     try:
         resp = requests.get(
             url,
@@ -472,7 +464,6 @@ def tool_edit(filePath, oldString, newString, replaceAll=False):
 def tool_github_walk(action, repo, file_path=None, branch=None):
     headers = {"User-Agent": "opencode-app", "Accept": "application/vnd.github+json"}
 
-    # Auto-detect default branch if not provided
     if not branch:
         try:
             r = requests.get(f"https://api.github.com/repos/{repo}", headers=headers, timeout=15)
@@ -484,7 +475,6 @@ def tool_github_walk(action, repo, file_path=None, branch=None):
 
     if action == "tree":
         try:
-            # Get the recursive file tree via Git Trees API
             r = requests.get(
                 f"https://api.github.com/repos/{repo}/git/trees/{branch}?recursive=1",
                 headers=headers, timeout=20
@@ -494,21 +484,18 @@ def tool_github_walk(action, repo, file_path=None, branch=None):
             data = r.json()
             items = data.get("tree", [])
             truncated = data.get("truncated", False)
-
-            # Only show files (blobs), skip tree entries — cleaner and much smaller
             files = [item["path"] for item in items if item["type"] == "blob"]
             total = len(files)
             MAX_FILES = 400
             capped = total > MAX_FILES
             if capped:
                 files = files[:MAX_FILES]
-
             lines = [f"# {repo} @ {branch}  ({total} files total)\n"]
             lines += files
             if capped:
                 lines.append(f"\n... showing {MAX_FILES}/{total} files. Use action='read' with a specific file_path to read any file.")
             if truncated:
-                lines.append("⚠️ GitHub truncated the tree (repo is very large). Results may be incomplete.")
+                lines.append("GitHub truncated the tree (repo is very large). Results may be incomplete.")
             return "\n".join(lines)
         except Exception as e:
             return f"GitHub tree error: {e}"
@@ -517,7 +504,6 @@ def tool_github_walk(action, repo, file_path=None, branch=None):
         if not file_path:
             return "file_path is required for action='read'"
         try:
-            # Use raw content URL for simplicity
             raw_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{file_path}"
             r = requests.get(raw_url, headers={"User-Agent": "opencode-app"}, timeout=20)
             if r.status_code == 404:
@@ -526,7 +512,7 @@ def tool_github_walk(action, repo, file_path=None, branch=None):
                 return f"Failed to read file: {r.status_code}"
             content = r.text
             if len(content) > 20000:
-                content = content[:20000] + f"\n\n... (truncated, {len(r.text)} chars total — use offset/limit params or ask for a specific section)"
+                content = content[:20000] + f"\n\n... (truncated, {len(r.text)} chars total)"
             return f"# {repo}/{file_path}\n\n{content}"
         except Exception as e:
             return f"GitHub read error: {e}"
@@ -686,10 +672,20 @@ def list_dir():
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    global history, working_dir, working_dirs
+    global working_dir, working_dirs
     data = request.json
-    user_msg = data.get("message", "")
-    model = data.get("model", MODEL)
+    user_msg  = data.get("message", "")
+    model     = data.get("model", MODEL)
+    # Use the chat_id sent by the frontend to look up the correct per-chat history.
+    # Falls back to "default" so old clients still work.
+    chat_id   = data.get("chat_id", "default")
+
+    # Ensure this chat has an entry in our per-chat dicts
+    if chat_id not in chat_histories:
+        chat_histories[chat_id] = []
+
+    # Work on a reference to this chat's history list
+    history = chat_histories[chat_id]
     history.append({"role": "user", "content": user_msg})
 
     dirs = working_dirs if working_dirs else ([working_dir] if working_dir else [])
@@ -705,18 +701,16 @@ def chat():
         system_msg = {"role": "system", "content": f"You have access to {len(dirs)} project folder(s):\n\n{dir_info}\n\nAlways use tools relative to these directories. Never navigate above them."}
     else:
         system_msg = {"role": "system", "content": "No working directory set. Ask user to select a project folder first."}
-    msgs_with_sys = [system_msg] + list(history)
 
     def generate():
-        global history, previous_summary
         import time
         full_content = ""
         last_heartbeat = time.time()
 
-        # ── Context compaction ────────────────────────────────────────────────
-        # COMPACTION_THRESHOLD is used as the context_limit for mobile budgets.
-        # MAX_TOKENS is treated as the max output size.
-        compacted, previous_summary, did_compact = compact_messages(
+        # Use per-chat compaction summary
+        previous_summary = chat_summaries.get(chat_id)
+
+        compacted, new_summary, did_compact = compact_messages(
             messages=list(history),
             system_messages=[system_msg],
             api_url=API_URL,
@@ -726,10 +720,10 @@ def chat():
             max_output_tokens=MAX_TOKENS,
         )
         if did_compact:
+            chat_summaries[chat_id] = new_summary
             yield f"data: {json.dumps({'type': 'compaction', 'text': 'Context compacted.'})}\n\n"
 
         messages = [system_msg] + build_compacted_messages_for_api(compacted)
-        # ─────────────────────────────────────────────────────────────────────
 
         for _round in range(1000):
             payload = {
@@ -828,10 +822,13 @@ def chat():
                 })
 
         if full_content:
+            # Write back to the per-chat history (not a global)
             history.append({"role": "assistant", "content": full_content})
             if len(history) > 40:
-                history = history[-40:]
-            yield f"data: {json.dumps({'type': 'history_update', 'history': history})}\n\n"
+                chat_histories[chat_id] = history[-40:]
+            else:
+                chat_histories[chat_id] = history
+            yield f"data: {json.dumps({'type': 'history_update', 'history': chat_histories[chat_id]})}\n\n"
 
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
@@ -848,9 +845,10 @@ def chat():
 
 @app.route("/clear", methods=["POST"])
 def clear():
-    global history, previous_summary
-    history = []
-    previous_summary = None
+    data = request.json or {}
+    chat_id = data.get("chat_id", "default")
+    chat_histories.pop(chat_id, None)
+    chat_summaries.pop(chat_id, None)
     return jsonify({"status": "cleared"})
 
 
@@ -868,11 +866,16 @@ def set_working_dirs():
 
 @app.route("/switch_chat", methods=["POST"])
 def switch_chat():
-    global history, current_chat_id, previous_summary
+    global current_chat_id
     data = request.json
-    current_chat_id = data.get("chat_id")
-    history = data.get("history", [])
-    previous_summary = data.get("summary", None)  # restore saved summary if present
+    chat_id = data.get("chat_id")
+    current_chat_id = chat_id
+    # Seed per-chat history from the saved data the frontend sends.
+    # This keeps the backend in sync when loading persisted chats.
+    if chat_id:
+        chat_histories[chat_id] = data.get("history", [])
+        if "summary" in data:
+            chat_summaries[chat_id] = data["summary"]
     return jsonify({"status": "ok"})
 
 
@@ -883,20 +886,17 @@ def storage_dir():
 
 @app.route("/save_chats", methods=["POST"])
 def save_chats():
-    """Save all chats: index.json for ordering + one file per chat."""
     data = request.json
     chats = data.get("chats", [])
     active_id = data.get("activeChatId")
     try:
         odir = get_opencode_dir()
-        # Write each chat to its own file
         for chat in chats:
             cid = chat.get("id", "")
             if not cid:
                 continue
             with open(chat_file(cid), "w", encoding="utf-8") as f:
                 json.dump(chat, f, ensure_ascii=False, indent=2)
-        # Write index (just ids + titles for listing, no history)
         index = {
             "activeChatId": active_id,
             "chatIds": [c["id"] for c in chats if c.get("id")]
@@ -910,7 +910,6 @@ def save_chats():
 
 @app.route("/load_chats", methods=["GET"])
 def load_chats():
-    """Load all chats from per-chat files via index."""
     try:
         with open(chats_index_file(), "r", encoding="utf-8") as f:
             index = json.load(f)
@@ -920,7 +919,7 @@ def load_chats():
                 with open(chat_file(cid), "r", encoding="utf-8") as f:
                     chats.append(json.load(f))
             except Exception:
-                pass  # Skip missing/corrupt chat files gracefully
+                pass
         return jsonify({"chats": chats, "activeChatId": index.get("activeChatId")})
     except FileNotFoundError:
         return jsonify({"chats": [], "activeChatId": None})
@@ -930,11 +929,13 @@ def load_chats():
 
 @app.route("/delete_chat", methods=["POST"])
 def delete_chat():
-    """Delete a single chat's JSON file."""
     data = request.json
     cid = data.get("chat_id", "")
     if not cid:
         return jsonify({"status": "error", "message": "No chat_id"})
+    # Also clean up in-memory state for deleted chat
+    chat_histories.pop(cid, None)
+    chat_summaries.pop(cid, None)
     try:
         path = chat_file(cid)
         if os.path.isfile(path):
@@ -945,5 +946,5 @@ def delete_chat():
 
 
 if __name__ == "__main__":
-    print(f"OpenCode — http://localhost:{PORT}")
-    app.run(host=HOST, port=PORT, debug=True)
+    print(f"OpenCode -- http://localhost:{PORT}")
+    app.run(host=HOST, port=PORT, debug=True, threaded=True)

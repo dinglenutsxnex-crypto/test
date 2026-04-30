@@ -80,6 +80,8 @@ body { display: flex; }
 .chat-item-title { font-size: 13px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-item.active .chat-item-title { color: var(--text); }
 .chat-item-dir { font-size: 10.5px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-item-responding { font-size: 10.5px; color: var(--accent, #7c6af7); opacity: 0.85; animation: pulse-text 1.4s ease-in-out infinite; }
+@keyframes pulse-text { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
 
 /* ─── Main ──────────────────────────────────────────────── */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }

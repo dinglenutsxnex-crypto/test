@@ -1,7 +1,15 @@
 // ── State ─────────────────────────────────────────────────────────────
-let sending = false;
+// Per-chat sending state — replaces the old global `sending` bool.
+// Each chat can be independently streaming without blocking others.
+const sendingChats = new Set();   // set of chat IDs currently awaiting a response
+
+// Per-chat partial stream state so we can re-render when switching back
+// to a chat that is still responding.
+// chatId -> { assistantText, hasContent }
+const chatStreamState = {};
+
 let selectedModel = 'minimax-m2.5-free';
-let selectedModelCtx = 1000000; // context window tokens for active model
+let selectedModelCtx = 1000000;
 
 function formatCtx(n) {
     if (n >= 1000000) return (n / 1000000).toFixed(0) + 'M';
@@ -40,7 +48,6 @@ const renameConfirm= document.getElementById('rename-confirm');
 function androidBridge() { return window.Android; }
 
 // ── Storage dir path ──────────────────────────────────────────────────
-// We ask the backend for the opencode data dir on first load
 let storageDir = '';
 
 async function getStorageDir() {
@@ -87,10 +94,20 @@ function createChat() {
 }
 
 function truncatePath(p) {
-    // Show .../x/y/z — keep last 3 segments
     const parts = p.replace(/\\/g, '/').split('/').filter(Boolean);
     if (parts.length <= 3) return p;
-    return '…/' + parts.slice(-3).join('/');
+    return '.../' + parts.slice(-3).join('/');
+}
+
+// ── Send button state ─────────────────────────────────────────────────
+// Only disable the send button if the *currently active* chat is sending.
+// Other chats streaming in the background do not affect this chat's button.
+function updateSendButton() {
+    const busy = sendingChats.has(activeChatId);
+    sendBtn.disabled = busy;
+    sendBtn.innerHTML = busy
+        ? '<span class="dots"><span></span><span></span><span></span></span>'
+        : '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
 }
 
 // ── Folder bar ────────────────────────────────────────────────────────
@@ -103,11 +120,11 @@ function renderFolderBar() {
     }
     folderBar.classList.remove('hidden');
     folderBar.innerHTML = dirs.map((d) =>
-        `<span class="folder-chip-tag" title="${escHtml(d)}">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-            ${escHtml(truncatePath(d))}
-            <button class="folder-remove" data-path="${escHtml(d)}" title="Remove folder">×</button>
-        </span>`
+        '<span class="folder-chip-tag" title="' + escHtml(d) + '">' +
+            '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' +
+            escHtml(truncatePath(d)) +
+            '<button class="folder-remove" data-path="' + escHtml(d) + '" title="Remove folder">x</button>' +
+        '</span>'
     ).join('');
     folderBar.querySelectorAll('.folder-remove').forEach(btn => {
         btn.onclick = async (e) => {
@@ -133,7 +150,6 @@ async function syncWorkingDirs() {
             body: JSON.stringify({ working_dirs: dirs })
         });
         const data = await resp.json();
-        // If backend found invalid dirs (deleted/missing folders), remove them from chat
         if (data.invalid_dirs && data.invalid_dirs.length && chat) {
             const removed = new Set(data.invalid_dirs);
             const before = chat.workingDirs.length;
@@ -142,12 +158,10 @@ async function syncWorkingDirs() {
                 renderFolderBar();
                 renderChatList();
                 saveChats();
-                // Show a brief notice
                 const notice = document.createElement('div');
                 notice.className = 'folder-removed-notice';
-                notice.textContent = `${removed.size} folder(s) no longer accessible and were removed.`;
-                const chatEl2 = document.getElementById('chat');
-                chatEl2.appendChild(notice);
+                notice.textContent = removed.size + ' folder(s) no longer accessible and were removed.';
+                document.getElementById('chat').appendChild(notice);
                 setTimeout(() => notice.remove(), 4000);
             }
         }
@@ -160,14 +174,16 @@ function renderChatList() {
         chatList.innerHTML = '<div class="chat-list-empty">no chats yet</div>';
         return;
     }
-    chatList.innerHTML = chats.map(c =>
-        `<div class="chat-item ${c.id === activeChatId ? 'active' : ''}" data-id="${c.id}">
-            <div class="chat-item-inner">
-                <span class="chat-item-title">${escHtml(c.title)}</span>
-                ${c.workingDirs.length ? `<span class="chat-item-dir" title="${escHtml(c.workingDirs[0])}">${escHtml(truncatePath(c.workingDirs[0]))}</span>` : ''}
-            </div>
-        </div>`
-    ).join('');
+    chatList.innerHTML = chats.map(c => {
+        const isSending = sendingChats.has(c.id);
+        return '<div class="chat-item ' + (c.id === activeChatId ? 'active' : '') + '" data-id="' + c.id + '">' +
+            '<div class="chat-item-inner">' +
+                '<span class="chat-item-title">' + escHtml(c.title) + '</span>' +
+                (isSending ? '<span class="chat-item-responding">responding\u2026</span>' : '') +
+                (!isSending && c.workingDirs.length ? '<span class="chat-item-dir" title="' + escHtml(c.workingDirs[0]) + '">' + escHtml(truncatePath(c.workingDirs[0])) + '</span>' : '') +
+            '</div>' +
+        '</div>';
+    }).join('');
     chatList.querySelectorAll('.chat-item').forEach(el => {
         el.onclick = () => switchChat(el.dataset.id);
     });
@@ -182,7 +198,7 @@ async function switchChat(id) {
     const chat = activeChat();
     chatTitle.textContent = chat ? chat.title : 'new chat';
 
-    // Tell backend to load this chat's history
+    // Tell backend which chat is now active
     await fetch('/switch_chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -192,8 +208,23 @@ async function switchChat(id) {
 
     renderChatList();
     renderFolderBar();
+
+    // Render saved history first
     renderHistory();
+
+    // If this chat is still streaming in the background, show the partial response
+    if (sendingChats.has(id)) {
+        const state = chatStreamState[id];
+        const div = createAssistantShell();
+        div.dataset.live = id;
+        if (state && state.hasContent) {
+            div.innerHTML = '<span class="msg-prefix">assistant</span>' + parseMarkdown(state.assistantText) + '<span class="cursor"></span>';
+        }
+        scrollBottom();
+    }
+
     updateContextBadge();
+    updateSendButton();
     saveChats();
     sidebar.classList.add('collapsed');
 }
@@ -242,7 +273,6 @@ async function addFolder(path) {
     saveChats();
 }
 
-// Poll Android for folder changes
 setInterval(async () => {
     const android = androidBridge();
     if (!android || !android.getWorkingDir) return;
@@ -251,7 +281,6 @@ setInterval(async () => {
     const chat = activeChat();
     if (chat && !chat.workingDirs.includes(newPath)) {
         await addFolder(newPath);
-        // Clear Android's pending path
         if (android.clearWorkingDir) android.clearWorkingDir();
     }
 }, 1000);
@@ -270,6 +299,7 @@ newChatBtn.onclick = async () => {
     await syncWorkingDirs();
     renderChatList();
     renderFolderBar();
+    updateSendButton();
     saveChats();
     input.focus();
     sidebar.classList.add('collapsed');
@@ -284,13 +314,12 @@ function updateContextBadge() {
     const charCount = chat ? chat.history.reduce((n, m) => n + String(m.content || '').length, 0) : 0;
     const tokEst = Math.round(charCount / 4);
     const total = selectedModelCtx;
-    contextBadge.textContent = `${formatCtx(tokEst)}/${formatCtx(total)}`;
-    // Color hint: warn when >70%, red >90%
+    contextBadge.textContent = formatCtx(tokEst) + '/' + formatCtx(total);
     const pct = tokEst / total;
     contextBadge.style.color = pct > 0.9 ? 'var(--err, #e05)' : pct > 0.7 ? 'var(--warn, #f90)' : '';
 }
 
-// ── Chat menu (⋮) ─────────────────────────────────────────────────────
+// ── Chat menu (three dots) ─────────────────────────────────────────────────────
 chatMenuBtn.onclick = (e) => {
     e.stopPropagation();
     chatMenu.classList.toggle('hidden');
@@ -334,19 +363,15 @@ deleteChatBtn.onclick = async (e) => {
     const chat = activeChat();
     if (!chat) return;
 
-    // Delete the chat's JSON file from backend
     await fetch('/delete_chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chat_id: chat.id })
     });
 
-    // Remove from local list and save updated index
     chats = chats.filter(c => c.id !== chat.id);
     activeChatId = chats.length ? chats[0].id : null;
     await saveChats();
-
-    // Reload the page — cleanest way to reset all state
     location.reload();
 };
 
@@ -379,13 +404,13 @@ function escHtml(s) {
 }
 
 function buildCodeBlock(lang, code) {
-    return `<div class="code-block">` +
-        `<div class="code-block-header">` +
-        `<span class="code-lang">${escHtml(lang||'code')}</span>` +
-        `<button class="copy-btn" onclick="copyCode(this)">copy</button>` +
-        `</div>` +
-        `<pre><code class="lang-${escHtml(lang)}">${escHtml(code.trimEnd())}</code></pre>` +
-        `</div>`;
+    return '<div class="code-block">' +
+        '<div class="code-block-header">' +
+        '<span class="code-lang">' + escHtml(lang||'code') + '</span>' +
+        '<button class="copy-btn" onclick="copyCode(this)">copy</button>' +
+        '</div>' +
+        '<pre><code class="lang-' + escHtml(lang) + '">' + escHtml(code.trimEnd()) + '</code></pre>' +
+        '</div>';
 }
 
 function parseMarkdown(text) {
@@ -412,13 +437,13 @@ function parseMarkdown(text) {
         s = s.replace(/^## (.+)$/gm,  '<h2>$1</h2>');
         s = s.replace(/^# (.+)$/gm,   '<h1>$1</h1>');
         s = s.replace(/^[\*\-] (.+)$/gm, '<li>$1</li>');
-        s = s.replace(/(<li>.*<\/li>\n?)+/g, mm => `<ul>${mm}</ul>`);
+        s = s.replace(/(<li>.*<\/li>\n?)+/g, function(mm) { return '<ul>' + mm + '</ul>'; });
         s = s.replace(/^---$/gm, '<hr>');
         return s.split(/\n\n+/).map(b => {
             b = b.trim();
             if (!b) return '';
             if (/^<(div|ul|ol|h[1-6]|hr|blockquote)/.test(b)) return b;
-            return `<p>${b.replace(/\n/g, '<br>')}</p>`;
+            return '<p>' + b.replace(/\n/g, '<br>') + '</p>';
         }).join('\n');
     }).join('');
 }
@@ -453,14 +478,14 @@ function addUserMsg(content) {
 function addAssistantMsgStatic(content) {
     const div = document.createElement('div');
     div.className = 'msg assistant';
-    div.innerHTML = `<span class="msg-prefix">assistant</span>` + parseMarkdown(content);
+    div.innerHTML = '<span class="msg-prefix">assistant</span>' + parseMarkdown(content);
     chatEl.appendChild(div);
 }
 
 function createAssistantShell() {
     const div = document.createElement('div');
     div.className = 'msg assistant streaming';
-    div.innerHTML = `<span class="msg-prefix">assistant</span><span class="cursor"></span>`;
+    div.innerHTML = '<span class="msg-prefix">assistant</span><span class="cursor"></span>';
     chatEl.appendChild(div);
     scrollBottom();
     return div;
@@ -468,19 +493,19 @@ function createAssistantShell() {
 
 function sealAssistant(div, text) {
     div.classList.remove('streaming');
-    div.innerHTML = `<span class="msg-prefix">assistant</span>` + parseMarkdown(text);
+    div.innerHTML = '<span class="msg-prefix">assistant</span>' + parseMarkdown(text);
 }
 
 function createThinkingBlock() {
     const wrapper = document.createElement('div');
     wrapper.className = 'thinking-wrapper';
-    wrapper.innerHTML = `
-        <button class="thinking-header">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="12" r="10"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-            <span class="thinking-label">thinking…</span>
-            <svg class="thinking-chevron" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-        </button>
-        <div class="thinking-body open"></div>`;
+    wrapper.innerHTML =
+        '<button class="thinking-header">' +
+            '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="12" r="10"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>' +
+            '<span class="thinking-label">thinking\u2026</span>' +
+            '<svg class="thinking-chevron" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>' +
+        '</button>' +
+        '<div class="thinking-body open"></div>';
     chatEl.appendChild(wrapper);
     scrollBottom();
     const header = wrapper.querySelector('.thinking-header');
@@ -512,57 +537,53 @@ function createToolPill(name, args, group) {
     div.className = 'tool-pill';
     let icon, label;
     if (name === 'web_search') {
-        icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`;
-        label = `searching&nbsp;<em>${escHtml(args.query||'')}</em>`;
+        icon = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
+        label = 'searching&nbsp;<em>' + escHtml(args.query||'') + '</em>';
     } else if (name === 'glob') {
-        icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
-        label = `finding&nbsp;<em>${escHtml(args.pattern||'')}</em>`;
+        icon = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
+        label = 'finding&nbsp;<em>' + escHtml(args.pattern||'') + '</em>';
     } else if (name === 'grep') {
-        icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`;
-        label = `searching&nbsp;<em>${escHtml(args.pattern||'')}</em>`;
+        icon = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
+        label = 'searching&nbsp;<em>' + escHtml(args.pattern||'') + '</em>';
     } else if (name === 'read') {
-        icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
-        label = `reading&nbsp;<em>${escHtml(args.filePath||'')}</em>`;
+        icon = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+        label = 'reading&nbsp;<em>' + escHtml(args.filePath||'') + '</em>';
     } else if (name === 'write') {
-        icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
-        label = `writing&nbsp;<em>${escHtml(args.filePath||'')}</em>`;
+        icon = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
+        label = 'writing&nbsp;<em>' + escHtml(args.filePath||'') + '</em>';
     } else if (name === 'edit') {
-        icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
-        label = `editing&nbsp;<em>${escHtml(args.filePath||'')}</em>`;
+        icon = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
+        label = 'editing&nbsp;<em>' + escHtml(args.filePath||'') + '</em>';
     } else {
-        icon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><circle cx="12" cy="12" r="10"/></svg>`;
-        label = `running&nbsp;<em>${escHtml(name)}</em>`;
+        icon = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><circle cx="12" cy="12" r="10"/></svg>';
+        label = 'running&nbsp;<em>' + escHtml(name) + '</em>';
     }
-    div.innerHTML = `<span class="tool-spinner"></span>${icon}<span>${label}</span>`;
+    div.innerHTML = '<span class="tool-spinner"></span>' + icon + '<span>' + label + '</span>';
     container.appendChild(div);
     scrollBottom();
     return div;
 }
 
-function setLoading(on) {
-    sendBtn.disabled = on;
-    sendBtn.innerHTML = on
-        ? `<span class="dots"><span></span><span></span><span></span></span>`
-        : `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`;
-}
-
 // ── Auto-title ────────────────────────────────────────────────────────
-async function autoTitle(userMsg) {
-    const chat = activeChat();
+async function autoTitle(chatId, userMsg) {
+    const chat = chats.find(c => c.id === chatId);
     if (!chat || chat.title !== 'new chat') return;
-    // Use first ~6 words of user message
     const words = userMsg.trim().split(/\s+/).slice(0, 6).join(' ');
-    chat.title = words.length > 40 ? words.slice(0, 40) + '…' : words;
-    chatTitle.textContent = chat.title;
+    chat.title = words.length > 40 ? words.slice(0, 40) + '\u2026' : words;
+    if (chatId === activeChatId) chatTitle.textContent = chat.title;
     renderChatList();
     saveChats();
 }
 
 // ── Send ──────────────────────────────────────────────────────────────
+// Each call to send() spawns an independent async stream for the current
+// chat. Multiple chats can stream simultaneously without blocking each other.
 async function send() {
-    if (sending) return;
     const userMsg = input.value.trim();
     if (!userMsg) return;
+
+    // Prevent double-sending the SAME chat, but allow other chats to send freely
+    if (sendingChats.has(activeChatId)) return;
 
     if (!activeChatId || !activeChat()) {
         const chat = createChat();
@@ -577,24 +598,32 @@ async function send() {
         renderChatList();
     }
 
+    // Snapshot the chat ID for this request's entire lifetime.
+    // If the user switches chats, sendingChatId stays correct.
     const sendingChatId = activeChatId;
-    const isStillActive = () => activeChatId === sendingChatId;
+    const isActive = () => activeChatId === sendingChatId;
 
     input.value = '';
     input.style.height = 'auto';
-    addUserMsg(userMsg);
-    autoTitle(userMsg);
 
-    sending = true;
-    setLoading(true);
+    // Show user message only if we are still looking at this chat
+    if (isActive()) addUserMsg(userMsg);
+
+    autoTitle(sendingChatId, userMsg);
+
+    // Mark this chat as busy
+    sendingChats.add(sendingChatId);
+    chatStreamState[sendingChatId] = { assistantText: '', hasContent: false };
+    updateSendButton();
+    renderChatList(); // show "responding..." badge in sidebar
+
+    const chat = chats.find(c => c.id === sendingChatId);
 
     let thinkingBlock = null;
     let assistantDiv  = null;
     let toolPill      = null;
     let toolGroup     = null;
     let assistantText = '';
-
-    const chat = chats.find(c => c.id === sendingChatId);
 
     let keepAliveTimer = setInterval(async () => {
         try { await fetch('/ping', { method: 'GET' }); } catch {}
@@ -604,9 +633,13 @@ async function send() {
         const resp = await fetch('/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: userMsg, model: selectedModel })
+            body: JSON.stringify({
+                message: userMsg,
+                model: selectedModel,
+                chat_id: sendingChatId          // tell backend which chat this belongs to
+            })
         });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
 
         const reader  = resp.body.getReader();
         const decoder = new TextDecoder();
@@ -628,7 +661,7 @@ async function send() {
 
                 switch (ev.type) {
                     case 'thinking': {
-                        if (!isStillActive()) break;
+                        if (!isActive()) break;
                         if (!thinkingBlock) thinkingBlock = createThinkingBlock();
                         if (!thinkingBlock._indicator) {
                             thinkingBlock._indicator = true;
@@ -640,29 +673,41 @@ async function send() {
                         break;
                     }
                     case 'text': {
-                        if (!isStillActive()) break;
+                        assistantText += ev.text;
+                        // Always keep stream state up-to-date for background chats
+                        chatStreamState[sendingChatId] = { assistantText, hasContent: true };
+
+                        if (!isActive()) break; // don't touch DOM for background chat
+
                         if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
                         if (toolPill) { toolPill.classList.add('done'); toolPill = null; toolGroup = null; }
-                        if (!assistantDiv) { assistantText = ''; assistantDiv = createAssistantShell(); }
-                        assistantText += ev.text;
-                        assistantDiv.innerHTML = `<span class="msg-prefix">assistant</span>` + parseMarkdown(assistantText) + '<span class="cursor"></span>';
+
+                        if (!assistantDiv) {
+                            // Check if switchChat already planted a live shell for this chat
+                            assistantDiv = chatEl.querySelector('[data-live="' + sendingChatId + '"]');
+                            if (!assistantDiv) {
+                                assistantDiv = createAssistantShell();
+                                assistantDiv.dataset.live = sendingChatId;
+                            }
+                        }
+                        assistantDiv.innerHTML = '<span class="msg-prefix">assistant</span>' + parseMarkdown(assistantText) + '<span class="cursor"></span>';
                         scrollBottom();
                         break;
                     }
                     case 'tool_use': {
-                        if (!isStillActive()) break;
+                        if (!isActive()) break;
                         if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
-                        if (assistantDiv) { sealAssistant(assistantDiv, assistantText); assistantDiv = null; assistantText = ''; }
+                        if (assistantDiv) { sealAssistant(assistantDiv, assistantText); assistantDiv = null; }
                         if (!toolGroup) toolGroup = createToolGroup();
                         if (toolPill) toolPill.classList.add('done');
                         toolPill = createToolPill(ev.name, ev.args, toolGroup);
                         break;
                     }
                     case 'tool_done': {
-                        if (!isStillActive()) break;
+                        if (!isActive()) break;
                         if (toolPill) {
                             const spinner = toolPill.querySelector('.tool-spinner');
-                            if (spinner) spinner.outerHTML = `<span class="tool-check">✓</span>`;
+                            if (spinner) spinner.outerHTML = '<span class="tool-check">\u2713</span>';
                         }
                         break;
                     }
@@ -670,52 +715,62 @@ async function send() {
                         break;
                     }
                     case 'history_update': {
+                        // Always update the correct chat's history, even in background
                         if (chat) {
                             chat.history = ev.history;
                             saveChats();
-                            if (isStillActive()) updateContextBadge();
+                            if (isActive()) updateContextBadge();
                         }
                         break;
                     }
                     case 'error': {
-                        if (!isStillActive()) break;
+                        if (!isActive()) break;
                         if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
-                        if (!assistantDiv) { assistantText = ''; assistantDiv = createAssistantShell(); }
+                        if (!assistantDiv) { assistantDiv = createAssistantShell(); }
                         assistantDiv.classList.remove('streaming');
-                        assistantDiv.innerHTML = `<span class="msg-prefix">assistant</span><span class="error-msg">⚠ ${escHtml(ev.text)}</span>`;
+                        assistantDiv.innerHTML = '<span class="msg-prefix">assistant</span><span class="error-msg">\u26a0 ' + escHtml(ev.text) + '</span>';
                         assistantDiv = null;
                         break;
                     }
                     case 'done': {
-                        if (!isStillActive()) break;
-                        if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
-                        if (assistantDiv)  { sealAssistant(assistantDiv, assistantText); assistantDiv = null; }
-                        if (toolPill)      { toolPill.classList.add('done'); toolPill = null; toolGroup = null; }
+                        if (isActive()) {
+                            if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
+                            if (assistantDiv)  { sealAssistant(assistantDiv, assistantText); assistantDiv = null; }
+                            if (toolPill)      { toolPill.classList.add('done'); toolPill = null; toolGroup = null; }
+                        }
                         break;
                     }
                 }
             }
         }
 
-        if (isStillActive()) {
+        // Final seal in case stream ended without a 'done' event
+        if (isActive()) {
             if (thinkingBlock) sealThinking(thinkingBlock);
             if (assistantDiv)  sealAssistant(assistantDiv, assistantText);
             if (toolPill)      toolPill.classList.add('done');
         }
 
     } catch (e) {
-        clearInterval(keepAliveTimer);
-        if (isStillActive()) {
+        if (isActive()) {
             const d = assistantDiv || createAssistantShell();
             d.classList.remove('streaming');
-            d.innerHTML = `<span class="msg-prefix">assistant</span><span class="error-msg">⚠ ${escHtml(e.message)}</span>`;
+            d.innerHTML = '<span class="msg-prefix">assistant</span><span class="error-msg">\u26a0 ' + escHtml(e.message) + '</span>';
         }
     }
 
     clearInterval(keepAliveTimer);
-    sending = false;
-    setLoading(false);
-    input.focus();
+
+    // Unmark this chat as busy
+    sendingChats.delete(sendingChatId);
+    delete chatStreamState[sendingChatId];
+
+    // Re-render sidebar badge and send button for whatever chat is active now
+    renderChatList();
+    updateSendButton();
+
+    // If the user is still on this chat, re-focus input
+    if (isActive()) input.focus();
 }
 
 sendBtn.onclick = send;
@@ -751,7 +806,7 @@ async function init() {
 
     renderChatList();
     renderFolderBar();
-    setLoading(false);
+    updateSendButton();
     input.focus();
 }
 
