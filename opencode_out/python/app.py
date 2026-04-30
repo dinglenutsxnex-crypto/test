@@ -715,17 +715,17 @@ def pencil_prune(chat_id: str, model: str) -> list:
     Returns the list of IDs actually removed.
     """
     history = chat_histories.get(chat_id, [])
-    if len(history) < 6:
-        return []  # too short to bother
+    if len(history) < 3:
+        return []  # need at least a user + assistant + something to compare
 
     # Send the full rich history as JSON context to the overseer
     history_json = json.dumps(history, ensure_ascii=False)
     payload = {
         "model": model,
         "messages": [
+            {"role": "system", "content": PENCIL_SYSTEM},
             {"role": "user", "content": history_json}
         ],
-        "system": PENCIL_SYSTEM,
         "stream": False,
         "max_tokens": 512,
     }
@@ -1081,44 +1081,44 @@ def clear():
 def manual_compact():
     """
     Manual 'Compress Chat' triggered by the user from the ⋯ menu.
-    Runs BOTH the Pencil prune pass AND the compaction summary pass
-    so the user gets a full clean-up in one shot.
+    Force-runs the compaction summarizer immediately — ignores token threshold.
     """
     data = request.json or {}
     chat_id = data.get("chat_id", "default")
     model   = data.get("model", MODEL)
 
-    if chat_id not in chat_histories:
-        return jsonify({"status": "ok", "pencil_removed": [], "compacted": False})
+    if chat_id not in chat_histories or not chat_histories[chat_id]:
+        return jsonify({"status": "ok", "compacted": False, "history": []})
 
-    # 1. Pencil prune first
-    removed_ids = pencil_prune(chat_id, model)
-
-    # 2. Then run compaction summary on the pruned history
     history = chat_histories.get(chat_id, [])
     flat    = history_to_api_messages(history)
     previous_summary = chat_summaries.get(chat_id)
 
-    compacted, new_summary, did_compact = compact_messages(
-        messages=flat,
-        system_messages=[{"role": "system", "content": "Compression request."}],
-        api_url=API_URL,
-        model=model,
-        previous_summary=previous_summary,
-        context_limit=COMPACTION_THRESHOLD,
-        max_output_tokens=MAX_TOKENS,
-    )
-    if did_compact:
-        chat_summaries[chat_id] = new_summary
-        # Replace in-memory history with the compacted flat form
-        # Re-wrap as rich turns so structure is preserved
-        chat_histories[chat_id] = build_compacted_messages_for_api(compacted)
+    # Split head/tail and generate summary unconditionally (bypass is_overflow check)
+    from python.compaction import split_head_tail, generate_summary, build_compacted_messages_for_api as _build
+
+    head, tail = split_head_tail(flat, COMPACTION_THRESHOLD, MAX_TOKENS)
+    if not head:
+        # Nothing to summarise (too few turns) — just return as-is
+        return jsonify({"status": "ok", "compacted": False, "history": history})
+
+    summary = generate_summary(API_URL, model, head, previous_summary)
+    if not summary:
+        return jsonify({"status": "error", "message": "Summary generation failed", "history": history})
+
+    chat_summaries[chat_id] = summary
+    compaction_marker = {
+        "role": "user",
+        "content": f"[Context compacted]\n\n{summary}",
+        "_compaction": True,
+    }
+    compacted_flat = [compaction_marker] + tail
+    chat_histories[chat_id] = _build(compacted_flat)
 
     return jsonify({
         "status": "ok",
-        "pencil_removed": removed_ids,
-        "compacted": did_compact,
-        "history": chat_histories.get(chat_id, []),
+        "compacted": True,
+        "history": chat_histories[chat_id],
     })
 
 

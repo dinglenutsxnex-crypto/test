@@ -240,9 +240,12 @@ function renderHistory() {
     for (const msg of chat.history) {
         if (msg.role === 'user') {
             addUserMsgStatic(msg.content);
-        } else if (msg.role === 'assistant') {
+        } else if (msg.role === 'assistant' && msg.content) {
+            // Only render assistant turns that have visible text content
+            // (intermediate tool-calling turns have empty content)
             addAssistantMsgStatic(msg.content);
         }
+        // role === 'tool' turns are internal — never rendered directly
     }
     updateContextBadge();
     scrollBottom();
@@ -400,12 +403,14 @@ compressChatBtn.onclick = async (e) => {
         }
 
         const parts = [];
-        if (data.pencil_removed && data.pencil_removed.length)
-            parts.push(`Pencil removed ${data.pencil_removed.length} turn(s)`);
         if (data.compacted)
             parts.push('history summarised');
-        const msg = parts.length ? '✓ ' + parts.join(' · ') : '✓ Nothing to compress';
-        showStatusBanner(msg, 'ok');
+
+        if (parts.length) {
+            showStatusBanner('✓ ' + parts.join(' · '), 'ok');
+        } else {
+            showStatusBanner('✓ Not enough history to summarise yet', 'info');
+        }
     } catch (err) {
         showStatusBanner('⚠ Compression failed: ' + err.message, 'error');
     }
@@ -779,7 +784,9 @@ async function send() {
                         break;
                     }
                     case 'history_update': {
-                        // Always update the correct chat's history, even in background
+                        // Update the chat's stored history but DON'T re-render the DOM —
+                        // the live stream is already painting the messages correctly.
+                        // Re-rendering here would wipe the streamed content.
                         if (chat) {
                             chat.history = ev.history;
                             saveChats();
