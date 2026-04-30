@@ -531,22 +531,31 @@ function addUserMsg(content) {
 function addAssistantMsgStatic(content, reasoning) {
     const div = document.createElement('div');
     div.className = 'msg assistant';
-    div.innerHTML = '<span class="msg-prefix">assistant</span>';
+    const prefix = document.createElement('span');
+    prefix.className = 'msg-prefix';
+    prefix.textContent = 'assistant';
+    div.appendChild(prefix);
     if (reasoning) {
         const wrapper = document.createElement('div');
         wrapper.className = 'thinking-wrapper';
-        wrapper.innerHTML =
-            '<button class="thinking-header">' +
+        const header = document.createElement('button');
+        header.className = 'thinking-header';
+        header.innerHTML =
             '<span class="thinking-label">thought process</span>' +
-            '<svg class="thinking-chevron" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>' +
-            '</button>' +
-            '<div class="thinking-body">' + escHtml(reasoning) + '</div>';
-        const header = wrapper.querySelector('.thinking-header');
-        const body = wrapper.querySelector('.thinking-body');
+            '<svg class="thinking-chevron" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>';
+        const body = document.createElement('div');
+        body.className = 'thinking-body open';
+        body.textContent = reasoning;
         header.addEventListener('click', () => body.classList.toggle('open'));
+        wrapper.appendChild(header);
+        wrapper.appendChild(body);
         div.appendChild(wrapper);
     }
-    if (content) div.innerHTML += parseMarkdown(content);
+    if (content) {
+        const contentDiv = document.createElement('div');
+        contentDiv.innerHTML = parseMarkdown(content);
+        div.appendChild(contentDiv);
+    }
     chatEl.appendChild(div);
 }
 
