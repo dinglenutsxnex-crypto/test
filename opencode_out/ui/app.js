@@ -714,17 +714,6 @@ async function send() {
     // Show user message only if we are still looking at this chat
     if (isActive()) addUserMsg(userMsg);
 
-    // Immediately persist a snapshot so closing the app right after sending
-    // doesn't lose the user's message. We write a _pending flag so that
-    // history_update (which arrives at stream end) overwrites it cleanly.
-    if (chat) {
-        const snapshot = [...(chat.history || []), { id: 'u_pending_' + Date.now(), role: 'user', content: userMsg, _pending: true }];
-        const prevHistory = chat.history;
-        chat.history = snapshot;
-        saveChats();
-        chat.history = prevHistory;  // restore so the real history_update wins
-    }
-
     autoTitle(sendingChatId, userMsg);
 
     // Mark this chat as busy
@@ -734,6 +723,15 @@ async function send() {
     renderChatList(); // show "responding..." badge in sidebar
 
     const chat = chats.find(c => c.id === sendingChatId);
+
+    // Immediately persist user turn so closing the app mid-stream doesn't lose it.
+    // history_update at stream end will overwrite this with the authoritative history.
+    if (chat) {
+        const snapshot = [...(chat.history || []), { id: 'u_pending_' + Date.now(), role: 'user', content: userMsg, _pending: true }];
+        chat.history = snapshot;
+        saveChats();
+        chat.history = snapshot.slice(0, -1); // drop pending; real turn comes via history_update
+    }
 
     let thinkingBlock = null;
     let assistantDiv  = null;
