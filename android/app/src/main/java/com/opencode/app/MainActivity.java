@@ -30,11 +30,6 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import android.animation.Animator;
-import android.animation.AnimatorListenerAdapter;
-import android.animation.ValueAnimator;
-import android.view.ViewGroup;
-
 public class MainActivity extends Activity {
 
     public static MainActivity instance;
@@ -50,11 +45,6 @@ public class MainActivity extends Activity {
     private String selectedFolderPath;
     private String storageFolderPath;
 
-    // Loading overlay views
-    private ViewGroup loadingOverlay;
-    private View dot1, dot2, dot3;
-    private boolean flaskPageLoaded = false;
-
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -62,26 +52,23 @@ public class MainActivity extends Activity {
         instance = this;
         setContentView(R.layout.activity_main);
 
-        loadingOverlay = findViewById(R.id.loading_overlay);
-        dot1 = findViewById(R.id.loading_dot_1);
-        dot2 = findViewById(R.id.loading_dot_2);
-        dot3 = findViewById(R.id.loading_dot_3);
-        startDotAnimations();
-
         prefs = getSharedPreferences("opencode", MODE_PRIVATE);
         selectedFolderPath = prefs.getString("working_dir", "");
         storageFolderPath = prefs.getString("storage_dir", "");
 
+        // Default to /storage/emulated/0/opencode folder on external storage
         if (storageFolderPath == null || storageFolderPath.isEmpty()) {
             File extStorage = Environment.getExternalStorageDirectory();
             storageFolderPath = new File(extStorage, "opencode").getAbsolutePath();
         }
 
+        // Create the storage directory
         File storageDir = new File(storageFolderPath);
         if (!storageDir.exists()) {
             storageDir.mkdirs();
         }
 
+        // Write storage path to a file in app's private files (accessible by Python)
         try {
             File storageFile = new File(getApplicationContext().getFilesDir(), "storage_dir.txt");
             java.io.FileWriter writer = new java.io.FileWriter(storageFile);
@@ -98,6 +85,7 @@ public class MainActivity extends Activity {
         webView = findViewById(R.id.webview);
         setupWebView();
         setupFetchWebView();
+        webView.loadData(LOADING_HTML, "text/html", "UTF-8");
         startFlaskServer();
 
         new Handler(Looper.getMainLooper()).postDelayed(
@@ -275,55 +263,10 @@ public class MainActivity extends Activity {
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
                 return !r.getUrl().toString().startsWith("http://localhost");
             }
-
-            @Override
-            public void onPageFinished(WebView view, String url) {
-                if (url.startsWith("http://localhost") && !flaskPageLoaded) {
-                    flaskPageLoaded = true;
-                    hideLoadingOverlay();
-                }
-            }
         });
     }
 
-    // ── Loading overlay ───────────────────────────────────────────────────────
-
-    private void startDotAnimations() {
-        startDotAnimation(dot1, 0);
-        startDotAnimation(dot2, 200);
-        startDotAnimation(dot3, 400);
-    }
-
-    private void startDotAnimation(final View dot, long delayMs) {
-        final ValueAnimator animator = ValueAnimator.ofFloat(0.2f, 1f);
-        animator.setDuration(400);
-        animator.setRepeatCount(ValueAnimator.INFINITE);
-        animator.setRepeatMode(ValueAnimator.REVERSE);
-        animator.setStartDelay(delayMs);
-        animator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
-            @Override
-            public void onAnimationUpdate(ValueAnimator animation) {
-                dot.setAlpha((float) animation.getAnimatedValue());
-            }
-        });
-        animator.start();
-    }
-
-    private void hideLoadingOverlay() {
-        if (loadingOverlay == null || loadingOverlay.getVisibility() != View.VISIBLE) return;
-        loadingOverlay.animate()
-            .alpha(0f)
-            .setDuration(300)
-            .setListener(new AnimatorListenerAdapter() {
-                @Override
-                public void onAnimationEnd(Animator animation) {
-                    loadingOverlay.setVisibility(View.GONE);
-                    loadingOverlay.setAlpha(1f);
-                }
-            });
-    }
-
-    // ── JS Bridge interface ───────────────────────────────────────────────────
+    // JS Bridge interface
     class AndroidBridge {
         @JavascriptInterface
         public String getWorkingDir() {
@@ -423,4 +366,26 @@ public class MainActivity extends Activity {
             }, 500);
         }
     }
+
+    // ── Loading screen ────────────────────────────────────────────────────────
+
+    private static final String LOADING_HTML =
+        "<!DOCTYPE html><html><head>" +
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>" +
+        "<style>" +
+        "* { margin:0; padding:0; box-sizing:border-box; }" +
+        "body { background:#0a0a0a; display:flex; align-items:center;" +
+        "       justify-content:center; height:100vh; font-family:monospace; }" +
+        ".wrap { text-align:center; color:#666; }" +
+        ".title { font-size:20px; color:#fff; margin-bottom:12px; letter-spacing:2px; }" +
+        ".dot { display:inline-block; width:6px; height:6px; border-radius:50%;" +
+        "       background:#666; margin:0 3px; animation:pulse 1.2s infinite; }" +
+        ".dot:nth-child(2) { animation-delay:.2s; }" +
+        ".dot:nth-child(3) { animation-delay:.4s; }" +
+        "@keyframes pulse { 0%,80%,100%{opacity:.2} 40%{opacity:1} }" +
+        "</style></head><body>" +
+        "<div class='wrap'>" +
+        "<div class='title'>opencode</div>" +
+        "<div><span class='dot'></span><span class='dot'></span><span class='dot'></span></div>" +
+        "</div></body></html>";
 }

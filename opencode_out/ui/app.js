@@ -102,20 +102,18 @@ function renderFolderBar() {
         return;
     }
     folderBar.classList.remove('hidden');
-    folderBar.innerHTML = dirs.map((d) =>
+    folderBar.innerHTML = dirs.map((d, i) =>
         `<span class="folder-chip-tag" title="${escHtml(d)}">
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
             ${escHtml(truncatePath(d))}
-            <button class="folder-remove" data-path="${escHtml(d)}" title="Remove folder">×</button>
+            <button class="folder-remove" data-idx="${i}" title="Remove folder">×</button>
         </span>`
     ).join('');
     folderBar.querySelectorAll('.folder-remove').forEach(btn => {
-        btn.onclick = async (e) => {
-            e.stopPropagation();
+        btn.onclick = async () => {
             const chat = activeChat();
             if (!chat) return;
-            const pathToRemove = btn.dataset.path;
-            chat.workingDirs = chat.workingDirs.filter(d => d !== pathToRemove);
+            chat.workingDirs.splice(parseInt(btn.dataset.idx), 1);
             await syncWorkingDirs();
             renderFolderBar();
             saveChats();
@@ -201,10 +199,7 @@ async function switchChat(id) {
 function renderHistory() {
     const chat = activeChat();
     chatEl.innerHTML = '';
-    if (!chat || !chat.history.length) {
-        updateContextBadge();
-        return;
-    }
+    if (!chat || !chat.history.length) return;
     for (const msg of chat.history) {
         if (msg.role === 'user') {
             addUserMsgStatic(msg.content);
@@ -212,7 +207,6 @@ function renderHistory() {
             addAssistantMsgStatic(msg.content);
         }
     }
-    updateContextBadge();
     scrollBottom();
 }
 
@@ -564,6 +558,7 @@ async function send() {
     const userMsg = input.value.trim();
     if (!userMsg) return;
 
+    // Ensure we have an active chat
     if (!activeChatId || !activeChat()) {
         const chat = createChat();
         activeChatId = chat.id;
@@ -577,8 +572,6 @@ async function send() {
         renderChatList();
     }
 
-    const sendingChatId = activeChatId;
-
     input.value = '';
     input.style.height = 'auto';
     addUserMsg(userMsg);
@@ -588,18 +581,18 @@ async function send() {
     setLoading(true);
 
     let thinkingBlock = null;
+    let thinkingIndicator = null;
     let assistantDiv  = null;
     let toolPill      = null;
     let toolGroup     = null;
     let assistantText = '';
 
-    const chat = chats.find(c => c.id === sendingChatId);
+    const chat = activeChat();
 
+    // Issue 5: keep-alive ping every 20s to prevent connection timeout
     let keepAliveTimer = setInterval(async () => {
         try { await fetch('/ping', { method: 'GET' }); } catch {}
     }, 20000);
-
-    const isStillActive = () => activeChatId === sendingChatId;
 
     try {
         const resp = await fetch('/chat', {
@@ -629,8 +622,8 @@ async function send() {
 
                 switch (ev.type) {
                     case 'thinking': {
-                        if (!isStillActive()) break;
                         if (!thinkingBlock) thinkingBlock = createThinkingBlock();
+                        // Issue 4: show active thinking indicator in the thinking header
                         if (!thinkingBlock._indicator) {
                             thinkingBlock._indicator = true;
                             thinkingBlock.header.querySelector('.thinking-label').innerHTML =
@@ -641,7 +634,6 @@ async function send() {
                         break;
                     }
                     case 'text': {
-                        if (!isStillActive()) break;
                         if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
                         if (toolPill) { toolPill.classList.add('done'); toolPill = null; toolGroup = null; }
                         if (!assistantDiv) { assistantText = ''; assistantDiv = createAssistantShell(); }
@@ -651,16 +643,15 @@ async function send() {
                         break;
                     }
                     case 'tool_use': {
-                        if (!isStillActive()) break;
                         if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
                         if (assistantDiv) { sealAssistant(assistantDiv, assistantText); assistantDiv = null; assistantText = ''; }
+                        // Issue 3: group tools together in a single container block
                         if (!toolGroup) toolGroup = createToolGroup();
                         if (toolPill) toolPill.classList.add('done');
                         toolPill = createToolPill(ev.name, ev.args, toolGroup);
                         break;
                     }
                     case 'tool_done': {
-                        if (!isStillActive()) break;
                         if (toolPill) {
                             const spinner = toolPill.querySelector('.tool-spinner');
                             if (spinner) spinner.outerHTML = `<span class="tool-check">✓</span>`;
@@ -671,15 +662,15 @@ async function send() {
                         break;
                     }
                     case 'history_update': {
+                        // Backend sends updated history after each round
                         if (chat) {
                             chat.history = ev.history;
                             saveChats();
-                            if (isStillActive()) updateContextBadge();
+                            updateContextBadge();
                         }
                         break;
                     }
                     case 'error': {
-                        if (!isStillActive()) break;
                         if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
                         if (!assistantDiv) { assistantText = ''; assistantDiv = createAssistantShell(); }
                         assistantDiv.classList.remove('streaming');
@@ -688,7 +679,6 @@ async function send() {
                         break;
                     }
                     case 'done': {
-                        if (!isStillActive()) break;
                         if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
                         if (assistantDiv)  { sealAssistant(assistantDiv, assistantText); assistantDiv = null; }
                         if (toolPill)      { toolPill.classList.add('done'); toolPill = null; toolGroup = null; }
@@ -698,19 +688,15 @@ async function send() {
             }
         }
 
-        if (isStillActive()) {
-            if (thinkingBlock) sealThinking(thinkingBlock);
-            if (assistantDiv)  sealAssistant(assistantDiv, assistantText);
-            if (toolPill)      toolPill.classList.add('done');
-        }
+        if (thinkingBlock) sealThinking(thinkingBlock);
+        if (assistantDiv)  sealAssistant(assistantDiv, assistantText);
+        if (toolPill)      toolPill.classList.add('done');
 
     } catch (e) {
         clearInterval(keepAliveTimer);
-        if (isStillActive()) {
-            const d = assistantDiv || createAssistantShell();
-            d.classList.remove('streaming');
-            d.innerHTML = `<span class="msg-prefix">assistant</span><span class="error-msg">⚠ ${escHtml(e.message)}</span>`;
-        }
+        const d = assistantDiv || createAssistantShell();
+        d.classList.remove('streaming');
+        d.innerHTML = `<span class="msg-prefix">assistant</span><span class="error-msg">⚠ ${escHtml(e.message)}</span>`;
     }
 
     clearInterval(keepAliveTimer);
