@@ -1,12 +1,63 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical">
+    android:background="#0a0a0a">
 
     <WebView
         android:id="@+id/webview"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-</LinearLayout>
+    <!-- Loading overlay: shown from instant app starts, hidden once Flask page loads -->
+    <LinearLayout
+        android:id="@+id/loading_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#0a0a0a"
+        android:gravity="center"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/loading_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:letterSpacing="0.1"
+            android:text="opencode"
+            android:textColor="#ffffff"
+            android:textSize="20sp" />
+
+        <LinearLayout
+            android:id="@+id/loading_dots_container"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+
+            <View
+                android:id="@+id/loading_dot_1"
+                android:layout_width="6dp"
+                android:layout_height="6dp"
+                android:layout_marginHorizontal="3dp"
+                android:background="@drawable/loading_dot" />
+
+            <View
+                android:id="@+id/loading_dot_2"
+                android:layout_width="6dp"
+                android:layout_height="6dp"
+                android:layout_marginHorizontal="3dp"
+                android:background="@drawable/loading_dot" />
+
+            <View
+                android:id="@+id/loading_dot_3"
+                android:layout_width="6dp"
+                android:layout_height="6dp"
+                android:layout_marginHorizontal="3dp"
+                android:background="@drawable/loading_dot" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+</FrameLayout>
