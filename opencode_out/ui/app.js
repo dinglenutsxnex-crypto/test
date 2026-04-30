@@ -240,12 +240,9 @@ function renderHistory() {
     for (const msg of chat.history) {
         if (msg.role === 'user') {
             addUserMsgStatic(msg.content);
-        } else if (msg.role === 'assistant' && msg.content) {
-            // Only render assistant turns that have visible text content
-            // (intermediate tool-calling turns have empty content)
-            addAssistantMsgStatic(msg.content);
+        } else if (msg.role === 'assistant' && (msg.content || msg.reasoning_content)) {
+            addAssistantMsgStatic(msg.content, msg.reasoning_content);
         }
-        // role === 'tool' turns are internal — never rendered directly
     }
     updateContextBadge();
     scrollBottom();
@@ -531,10 +528,25 @@ function addUserMsg(content) {
     scrollBottom();
 }
 
-function addAssistantMsgStatic(content) {
+function addAssistantMsgStatic(content, reasoning) {
     const div = document.createElement('div');
     div.className = 'msg assistant';
-    div.innerHTML = '<span class="msg-prefix">assistant</span>' + parseMarkdown(content);
+    div.innerHTML = '<span class="msg-prefix">assistant</span>';
+    if (reasoning) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'thinking-wrapper';
+        wrapper.innerHTML =
+            '<button class="thinking-header">' +
+            '<span class="thinking-label">thought process</span>' +
+            '<svg class="thinking-chevron" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>' +
+            '</button>' +
+            '<div class="thinking-body">' + escHtml(reasoning) + '</div>';
+        const header = wrapper.querySelector('.thinking-header');
+        const body = wrapper.querySelector('.thinking-body');
+        header.addEventListener('click', () => body.classList.toggle('open'));
+        div.appendChild(wrapper);
+    }
+    if (content) div.innerHTML += parseMarkdown(content);
     chatEl.appendChild(div);
 }
 
@@ -771,22 +783,7 @@ async function send() {
                     case 'heartbeat': {
                         break;
                     }
-                    case 'pencil_start': {
-                        if (isActive()) showStatusBanner('✦ Pencil pruning…', 'info');
-                        break;
-                    }
-                    case 'pencil_done': {
-                        if (chat) {
-                            const n = (ev.removed || []).length;
-                            if (isActive()) {
-                                if (n > 0)
-                                    showStatusBanner(`✓ Pencil removed ${n} redundant turn(s)`, 'ok');
-                                else
-                                    showStatusBanner('✦ Pencil: nothing to prune', 'info');
-                            }
-                        }
-                        break;
-                    }
+
                     case 'history_update': {
                         // Update the chat's stored history but DON'T re-render the DOM —
                         // the live stream is already painting the messages correctly.

@@ -3,6 +3,7 @@ import json
 import re
 import glob as glob_module
 import fnmatch
+import threading
 import requests
 from flask import Flask, send_file, request, jsonify, send_from_directory, Response, stream_with_context
 from python.config import API_URL, MODEL, HOST, PORT, WORKING_DIR, MAX_TOKENS, COMPACTION_THRESHOLD
@@ -679,48 +680,40 @@ def run_tool(name, args):
 
 # ── Pencil Architecture ────────────────────────────────────────────────
 # Every 4 assistant replies a lightweight overseer AI scans the rich
-# history and returns a JSON list of turn IDs to remove.  We then
-# scrub those IDs from the in-memory history while preserving referential
-# integrity (if a tool-call turn is removed, its paired tool-result is
-# also removed; if a tool-result is orphaned it is removed too).
+# history and returns a JSON list of turn IDs to remove and a map of
+# turn IDs whose reasoning_content should be replaced with a short summary.
+# Runs in a background thread so it never blocks the streaming response.
 
 PENCIL_SYSTEM = """You are a conversation history editor (the "Pencil").
-Your job is to identify REDUNDANT or WASTEFUL turns in an AI coding assistant's
-chat history so they can be pruned to save context tokens.
+Your job is to reduce token usage in an AI coding assistant's chat history.
 
-You will receive a JSON array of turns.  Each turn has an "id" field and one of:
+You will receive a JSON array of turns. Each turn has an "id" field and one of:
   - role "user"       → content string
   - role "assistant"  → content string, optional reasoning_content, optional tool_calls array
   - role "tool"       → tool_call_id, content (the tool's output)
 
-Identify turns whose IDs should be REMOVED based on these rules (in priority order):
-1. Reasoning turns where reasoning_content is present but the assistant reversed or
-   contradicted its conclusion in a later message (e.g. said yes then no then yes).
-   Remove the earlier contradicted reasoning and/or assistant message.
-2. Tool-call + tool-result pairs where the tool result was never actually referenced
-   or used in the final assistant answer (the information was fetched but discarded).
-3. Repeated assistant messages that say essentially the same thing as a later message.
-4. Do NOT remove the most recent user or assistant message.
-5. Do NOT remove a tool-result unless you also remove its paired assistant turn that
-   called it (or it is already orphaned).
-6. Be conservative — when in doubt, KEEP the turn.
+Return a JSON object with two keys:
 
-Respond with ONLY a JSON object in this exact format (no markdown, no preamble):
-{"remove": ["id1", "id2", ...]}
+"remove": list of turn IDs to delete entirely. Rules:
+  1. Tool-call + tool-result pairs where the result was never used in the final answer.
+  2. Repeated assistant messages that say essentially the same thing as a later message.
+  3. Do NOT remove the most recent user or assistant message.
+  4. Do NOT remove a tool-result unless you also remove its paired assistant turn.
+  5. Be conservative — when in doubt, KEEP the turn.
 
-If nothing should be removed respond with: {"remove": []}
+"summarise_thoughts": map of assistant turn ID → one-sentence summary of reasoning_content.
+  Only include turns where reasoning_content is long (>200 chars). Write a single sentence
+  capturing the key conclusion of the reasoning. Omit turns with no reasoning_content.
+
+Respond with ONLY valid JSON, no markdown, no preamble:
+{"remove": ["id1", ...], "summarise_thoughts": {"id2": "summary sentence", ...}}
 """
 
-def pencil_prune(chat_id: str, model: str) -> list:
-    """
-    Call the overseer LLM to identify redundant turns, then remove them.
-    Returns the list of IDs actually removed.
-    """
+def _pencil_background(chat_id: str, model: str) -> None:
     history = chat_histories.get(chat_id, [])
     if len(history) < 3:
-        return []  # need at least a user + assistant + something to compare
+        return
 
-    # Send the full rich history as JSON context to the overseer
     history_json = json.dumps(history, ensure_ascii=False)
     payload = {
         "model": model,
@@ -729,7 +722,7 @@ def pencil_prune(chat_id: str, model: str) -> list:
             {"role": "user", "content": history_json}
         ],
         "stream": False,
-        "max_tokens": 512,
+        "max_tokens": 1024,
     }
 
     try:
@@ -738,18 +731,21 @@ def pencil_prune(chat_id: str, model: str) -> list:
         data = resp.json()
         choices = data.get("choices") or []
         if not choices:
-            return []
-        raw = choices[0].get("message", {}).get("content", "")
-        parsed = json.loads(raw.strip())
-        ids_to_remove = set(parsed.get("remove", []))
+            return
+        raw = choices[0].get("message", {}).get("content", "").strip()
+        # Strip markdown fences if model wraps response
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-z]*
+?|
+?```$", "", raw).strip()
+        parsed = json.loads(raw)
     except Exception:
-        return []
+        return
 
-    if not ids_to_remove:
-        return []
+    ids_to_remove = set(parsed.get("remove", []))
+    thought_summaries = parsed.get("summarise_thoughts", {})
 
-    # Integrity pass: if we're removing an assistant turn that has tool_calls,
-    # also mark its paired tool-result turns for removal.
+    # Integrity: removing an assistant turn also removes its tool results
     extra = set()
     for turn in history:
         if turn.get("id") in ids_to_remove and turn.get("role") == "assistant":
@@ -760,7 +756,7 @@ def pencil_prune(chat_id: str, model: str) -> list:
                         extra.add(tr["id"])
     ids_to_remove |= extra
 
-    # Integrity pass: orphaned tool-result turns (their caller was already removed)
+    # Integrity: orphaned tool-result turns
     caller_ids = {
         tc.get("id")
         for turn in history
@@ -771,16 +767,29 @@ def pencil_prune(chat_id: str, model: str) -> list:
         if turn.get("role") == "tool" and turn.get("tool_call_id") not in caller_ids:
             ids_to_remove.add(turn["id"])
 
-    # Never remove the last user or last assistant message
+    # Never remove the most recent user or assistant turn
     last_user = next((t["id"] for t in reversed(history) if t.get("role") == "user"), None)
     last_asst = next((t["id"] for t in reversed(history) if t.get("role") == "assistant"), None)
     ids_to_remove.discard(last_user)
     ids_to_remove.discard(last_asst)
 
-    before = len(history)
-    chat_histories[chat_id] = [t for t in history if t.get("id") not in ids_to_remove]
-    actually_removed = [t["id"] for t in history if t.get("id") in ids_to_remove]
-    return actually_removed
+    # Apply: remove turns and replace long reasoning with summaries
+    new_history = []
+    for turn in history:
+        if turn.get("id") in ids_to_remove:
+            continue
+        tid = turn.get("id")
+        if tid in thought_summaries and turn.get("reasoning_content"):
+            turn = dict(turn)
+            turn["reasoning_content"] = "[summarised] " + thought_summaries[tid]
+        new_history.append(turn)
+
+    chat_histories[chat_id] = new_history
+
+def pencil_prune(chat_id: str, model: str) -> None:
+    """Fire pencil in a background thread. Does not block the stream."""
+    t = threading.Thread(target=_pencil_background, args=(chat_id, model), daemon=True)
+    t.start()
 
 
 @app.route("/")
@@ -1047,9 +1056,7 @@ def chat():
         cnt = chat_msg_counts.get(chat_id, 0) + 1
         chat_msg_counts[chat_id] = cnt
         if cnt % 4 == 0:
-            yield f"data: {json.dumps({'type': 'pencil_start'})}\n\n"
-            removed_ids = pencil_prune(chat_id, model)
-            yield f"data: {json.dumps({'type': 'pencil_done', 'removed': removed_ids or []})}\n\n"
+            pencil_prune(chat_id, model)
 
         yield f"data: {json.dumps({'type': 'history_update', 'history': chat_histories[chat_id]})}\n\n"
 
@@ -1227,14 +1234,28 @@ def load_chats():
         with open(chats_index_file(), "r", encoding="utf-8") as f:
             index = json.load(f)
         chats = []
+        loaded_ids = set()
         for cid in index.get("chatIds", []):
             try:
                 with open(chat_file(cid), "r", encoding="utf-8") as f:
                     chats.append(json.load(f))
+                loaded_ids.add(cid)
             except Exception:
-                pass
-        return jsonify({"chats": chats, "activeChatId": index.get("activeChatId")})
+                # File was deleted externally — purge in-memory state too
+                chat_histories.pop(cid, None)
+                chat_summaries.pop(cid, None)
+        # Purge any in-memory chats not in the index at all
+        for cid in list(chat_histories.keys()):
+            if cid not in loaded_ids:
+                chat_histories.pop(cid, None)
+                chat_summaries.pop(cid, None)
+        active = index.get("activeChatId")
+        if active not in loaded_ids:
+            active = chats[0]["id"] if chats else None
+        return jsonify({"chats": chats, "activeChatId": active})
     except FileNotFoundError:
+        chat_histories.clear()
+        chat_summaries.clear()
         return jsonify({"chats": [], "activeChatId": None})
     except Exception as e:
         return jsonify({"chats": [], "activeChatId": None, "error": str(e)})
