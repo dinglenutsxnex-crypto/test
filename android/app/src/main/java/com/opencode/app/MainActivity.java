@@ -56,7 +56,6 @@ public class MainActivity extends Activity {
 
     private BroadcastReceiver flaskReadyReceiver;
 
-    @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -96,11 +95,13 @@ public class MainActivity extends Activity {
         setupFullscreen();
         requestFileAccess();
 
-        startFlaskService();
+        registerFlaskReadyReceiver();
 
         webView = findViewById(R.id.webview);
         setupWebView();
         setupFetchWebView();
+
+        startFlaskService();
     }
 
     private void extractToybox() {
@@ -176,18 +177,21 @@ public class MainActivity extends Activity {
         }
     }
 
+    // When user comes back from the MANAGE_EXTERNAL_STORAGE settings page
     @Override
     protected void onResume() {
         super.onResume();
-        registerFlaskReadyReceiver();
         if (returningFromSettings) {
             returningFromSettings = false;
+        }
+        if (serverReady) {
+            loadFlaskPage();
         }
     }
 
     @Override
-    protected void onPause() {
-        super.onPause();
+    protected void onDestroy() {
+        super.onDestroy();
         unregisterFlaskReadyReceiver();
     }
 

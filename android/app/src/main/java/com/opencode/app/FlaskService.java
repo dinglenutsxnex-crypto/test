@@ -26,6 +26,7 @@ public class FlaskService extends Service {
     private static final int NOTIFICATION_ID = 1;
 
     private Thread flaskThread;
+    private Thread pollThread;
     private PowerManager.WakeLock wakeLock;
 
     @Override
@@ -61,7 +62,7 @@ public class FlaskService extends Service {
             PowerManager.PARTIAL_WAKE_LOCK,
             "opencode:FlaskWakeLock"
         );
-        wakeLock.acquire(10 * 60 * 60 * 1000L); // 10 hours max
+        wakeLock.acquire(10 * 60 * 60 * 1000L);
     }
 
     private void startFlaskServer() {
@@ -71,47 +72,49 @@ public class FlaskService extends Service {
                     Python.start(new AndroidPlatform(this));
                 }
                 Python.getInstance().getModule("runner").callAttr("run");
-
-                pollUntilReady();
-                broadcastFlaskReady();
             } catch (Exception e) {
                 e.printStackTrace();
             }
         });
         flaskThread.setDaemon(false);
         flaskThread.start();
-    }
 
-    private void pollUntilReady() {
-        for (int i = 0; i < 60; i++) {
-            try {
-                URL url = new URL("http://localhost:5000/ping");
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("GET");
-                conn.setConnectTimeout(2000);
-                conn.setReadTimeout(2000);
-                BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(conn.getInputStream())
-                );
-                StringBuilder response = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    response.append(line);
+        pollThread = new Thread(() -> {
+            for (int i = 0; i < 120; i++) {
+                try {
+                    URL url = new URL("http://localhost:5000/ping");
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("GET");
+                    conn.setConnectTimeout(2000);
+                    conn.setReadTimeout(2000);
+                    BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(conn.getInputStream())
+                    );
+                    StringBuilder response = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        response.append(line);
+                    }
+                    reader.close();
+                    conn.disconnect();
+                    if (response.toString().contains("ok")) {
+                        broadcastFlaskReady();
+                        return;
+                    }
+                } catch (Exception e) {
+                    try { Thread.sleep(500); } catch (InterruptedException ignored) {}
                 }
-                reader.close();
-                conn.disconnect();
-                if (response.toString().contains("ok")) return;
-            } catch (Exception e) {
-                try { Thread.sleep(500); } catch (InterruptedException ignored) {}
             }
-        }
+        });
+        pollThread.setDaemon(false);
+        pollThread.start();
     }
 
     private void broadcastFlaskReady() {
-        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+        new Handler(Looper.getMainLooper()).post(() -> {
             Intent broadcast = new Intent("com.opencode.app.FLASK_READY");
             sendBroadcast(broadcast);
-        }, 300);
+        });
     }
 
     private void createNotification() {
