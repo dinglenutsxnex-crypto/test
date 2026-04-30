@@ -777,10 +777,13 @@ async function send() {
                     }
                     case 'pencil_done': {
                         if (chat) {
-                            // history_update will arrive right after; just show notification
                             const n = (ev.removed || []).length;
-                            if (isActive() && n > 0)
-                                showStatusBanner(`✓ Pencil removed ${n} redundant turn(s)`, 'ok');
+                            if (isActive()) {
+                                if (n > 0)
+                                    showStatusBanner(`✓ Pencil removed ${n} redundant turn(s)`, 'ok');
+                                else
+                                    showStatusBanner('✦ Pencil: nothing to prune', 'info');
+                            }
                         }
                         break;
                     }

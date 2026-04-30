@@ -1036,7 +1036,6 @@ def chat():
                 })
 
         if new_rich_turns:
-            # Append all new rich turns to persistent history
             for t in new_rich_turns:
                 history.append(t)
 
@@ -1045,16 +1044,14 @@ def chat():
             else:
                 chat_histories[chat_id] = history
 
-            # ── Pencil Architecture trigger (every 4 assistant replies) ──
-            cnt = chat_msg_counts.get(chat_id, 0) + 1
-            chat_msg_counts[chat_id] = cnt
-            if cnt % 4 == 0:
-                yield f"data: {json.dumps({'type': 'pencil_start'})}\n\n"
-                removed_ids = pencil_prune(chat_id, model)
-                if removed_ids:
-                    yield f"data: {json.dumps({'type': 'pencil_done', 'removed': removed_ids})}\n\n"
+        cnt = chat_msg_counts.get(chat_id, 0) + 1
+        chat_msg_counts[chat_id] = cnt
+        if cnt % 4 == 0:
+            yield f"data: {json.dumps({'type': 'pencil_start'})}\n\n"
+            removed_ids = pencil_prune(chat_id, model)
+            yield f"data: {json.dumps({'type': 'pencil_done', 'removed': removed_ids or []})}\n\n"
 
-            yield f"data: {json.dumps({'type': 'history_update', 'history': chat_histories[chat_id]})}\n\n"
+        yield f"data: {json.dumps({'type': 'history_update', 'history': chat_histories[chat_id]})}\n\n"
 
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 

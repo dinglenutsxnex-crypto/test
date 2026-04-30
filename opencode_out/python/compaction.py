@@ -35,7 +35,7 @@ MAX_PRESERVE_TOKENS     = 8_000
 COMPACTION_BUFFER       = 20_000   # reserved for model output
 
 # ── prompt loading ─────────────────────────────────────────────────────────────
-_PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
+_PROMPTS_DIR = os.path.dirname(__file__)
 
 def _load_prompt(name: str) -> str:
     """Load a prompt file from the prompts/ directory."""
