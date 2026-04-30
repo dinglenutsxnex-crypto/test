@@ -2,10 +2,7 @@ package com.opencode.app;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
-import android.content.BroadcastReceiver;
-import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Build;
@@ -22,6 +19,10 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Toast;
+
+import com.chaquo.python.Python;
+import com.chaquo.python.android.AndroidPlatform;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -41,21 +42,20 @@ public class MainActivity extends Activity {
     private WebView fetchWebView;
     private static final int FLASK_PORT = 5000;
     private static final String FLASK_URL = "http://localhost:" + FLASK_PORT;
+    private static final int SERVER_START_DELAY_MS = 2500;
     private static final int REQUEST_FOLDER_PICKER = 100;
 
     private boolean returningFromSettings = false;
     private SharedPreferences prefs;
     private String selectedFolderPath;
     private String storageFolderPath;
-    private boolean serverReady = false;
 
     // Loading overlay views
     private ViewGroup loadingOverlay;
     private View dot1, dot2, dot3;
     private boolean flaskPageLoaded = false;
 
-    private BroadcastReceiver flaskReadyReceiver;
-
+    @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -95,13 +95,13 @@ public class MainActivity extends Activity {
         setupFullscreen();
         requestFileAccess();
 
-        registerFlaskReadyReceiver();
-
         webView = findViewById(R.id.webview);
         setupWebView();
         setupFetchWebView();
+        startFlaskServer();
 
-        startFlaskService();
+        new Handler(Looper.getMainLooper()).postDelayed(
+            () -> webView.loadUrl(FLASK_URL), SERVER_START_DELAY_MS);
     }
 
     private void extractToybox() {
@@ -169,12 +169,6 @@ public class MainActivity extends Activity {
                 android.Manifest.permission.WRITE_EXTERNAL_STORAGE
             }, 1001);
         }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            requestPermissions(new String[]{
-                android.Manifest.permission.POST_NOTIFICATIONS
-            }, 1002);
-        }
     }
 
     // When user comes back from the MANAGE_EXTERNAL_STORAGE settings page
@@ -183,56 +177,29 @@ public class MainActivity extends Activity {
         super.onResume();
         if (returningFromSettings) {
             returningFromSettings = false;
-        }
-        if (serverReady) {
-            loadFlaskPage();
-        }
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        unregisterFlaskReadyReceiver();
-    }
-
-    // ── Flask service ──────────────────────────────────────────────────────────
-
-    private void startFlaskService() {
-        Intent serviceIntent = new Intent(this, FlaskService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent);
-        } else {
-            startService(serviceIntent);
+            // 500ms delay wait fix after returning from settings
+            new Handler(Looper.getMainLooper()).postDelayed(
+                () -> webView.loadUrl(FLASK_URL), 500);
         }
     }
 
-    private void registerFlaskReadyReceiver() {
-        flaskReadyReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                serverReady = true;
-                loadFlaskPage();
+    // ── Flask server ──────────────────────────────────────────────────────────
+
+    private void startFlaskServer() {
+        Thread t = new Thread(() -> {
+            try {
+                if (!Python.isStarted()) {
+                    Python.start(new AndroidPlatform(this));
+                }
+                Python.getInstance().getModule("runner").callAttr("run");
+            } catch (Exception e) {
+                new Handler(Looper.getMainLooper()).post(() ->
+                    Toast.makeText(this, "Server error: " + e.getMessage(),
+                        Toast.LENGTH_LONG).show());
             }
-        };
-        IntentFilter filter = new IntentFilter("com.opencode.app.FLASK_READY");
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(flaskReadyReceiver, filter, Context.RECEIVER_EXPORTED);
-        } else {
-            registerReceiver(flaskReadyReceiver, filter);
-        }
-    }
-
-    private void unregisterFlaskReadyReceiver() {
-        if (flaskReadyReceiver != null) {
-            try { unregisterReceiver(flaskReadyReceiver); } catch (Exception ignored) {}
-            flaskReadyReceiver = null;
-        }
-    }
-
-    private void loadFlaskPage() {
-        if (webView != null && loadingOverlay != null) {
-            webView.loadUrl(FLASK_URL);
-        }
+        });
+        t.setDaemon(true);
+        t.start();
     }
 
     // ── Hidden fetch WebView ──────────────────────────────────────────────────
