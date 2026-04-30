@@ -755,19 +755,38 @@ def chat():
     # Rich user turn with stable ID
     history.append({"id": _next_id(chat_id, "u"), "role": "user", "content": user_msg})
 
+    import datetime as _dt
     dirs = working_dirs if working_dirs else ([working_dir] if working_dir else [])
     if dirs:
         hints = []
         for d in dirs:
             try:
                 files = sorted(os.listdir(d))[:30]
-                hints.append(f"Folder: {d}\nContents:\n" + "\n".join(files))
+                hints.append(f'<folder path="{d}">\n' + "\n".join(files) + "\n</folder>")
             except Exception:
-                hints.append(f"Folder: {d} (unreadable)")
-        dir_info = "\n\n".join(hints)
-        system_msg = {"role": "system", "content": f"You have access to {len(dirs)} project folder(s):\n\n{dir_info}\n\nAlways use tools relative to these directories. Never navigate above them."}
+                hints.append(f'<folder path="{d}" status="unreadable"/>')
+        dir_info = "\n".join(hints)
+        today = _dt.date.today()
+        system_content = f"""You are an expert software engineer and coding assistant running on Android.
+
+<env>
+  Platform: Android
+  Today: {today}
+  Working directories ({len(dirs)}):
+{dir_info}
+</env>
+
+# Rules
+- Be concise. Under 4 lines unless complexity demands more.
+- Do NOT explain what you are about to do — just do it.
+- Do NOT add summaries or postamble after completing a task.
+- ALWAYS ask for confirmation before editing, creating, or deleting any file. State the exact change, wait for yes.
+- All file paths are relative to the working directories above. Never access paths outside them.
+- If a task is ambiguous, ask one clarifying question before acting.
+- No filler, praise, or disclaimers unless safety-critical."""
+        system_msg = {"role": "system", "content": system_content}
     else:
-        system_msg = {"role": "system", "content": "No working directory set. Ask user to select a project folder first."}
+        system_msg = {"role": "system", "content": "No working directory set. Ask the user to select a project folder before proceeding."}
 
     def generate():
         import time
