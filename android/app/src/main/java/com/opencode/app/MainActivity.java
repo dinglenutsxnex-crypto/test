@@ -25,6 +25,8 @@ import com.chaquo.python.Python;
 import com.chaquo.python.android.AndroidPlatform;
 
 import java.io.File;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -34,16 +36,21 @@ public class MainActivity extends Activity {
 
     public static MainActivity instance;
     private WebView webView;
+    private WebView loadingWebView;
     private WebView fetchWebView;
     private static final int FLASK_PORT = 5000;
     private static final String FLASK_URL = "http://localhost:" + FLASK_PORT;
-    private static final int SERVER_START_DELAY_MS = 2500;
+    private static final int MIN_LOADING_MS = 1000;
+    private static final int POLL_INTERVAL_MS = 100;
+    private static final int POLL_TIMEOUT_MS = 15000;
     private static final int REQUEST_FOLDER_PICKER = 100;
 
     private boolean returningFromSettings = false;
     private SharedPreferences prefs;
     private String selectedFolderPath;
     private String storageFolderPath;
+
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -56,19 +63,16 @@ public class MainActivity extends Activity {
         selectedFolderPath = prefs.getString("working_dir", "");
         storageFolderPath = prefs.getString("storage_dir", "");
 
-        // Default to /storage/emulated/0/opencode folder on external storage
         if (storageFolderPath == null || storageFolderPath.isEmpty()) {
             File extStorage = Environment.getExternalStorageDirectory();
             storageFolderPath = new File(extStorage, "opencode").getAbsolutePath();
         }
 
-        // Create the storage directory
         File storageDir = new File(storageFolderPath);
         if (!storageDir.exists()) {
             storageDir.mkdirs();
         }
 
-        // Write storage path to a file in app's private files (accessible by Python)
         try {
             File storageFile = new File(getApplicationContext().getFilesDir(), "storage_dir.txt");
             java.io.FileWriter writer = new java.io.FileWriter(storageFile);
@@ -83,13 +87,77 @@ public class MainActivity extends Activity {
         requestFileAccess();
 
         webView = findViewById(R.id.webview);
-        setupWebView();
-        setupFetchWebView();
-        webView.loadData(LOADING_HTML, "text/html", "UTF-8");
-        startFlaskServer();
+        loadingWebView = findViewById(R.id.loading_webview);
 
-        new Handler(Looper.getMainLooper()).postDelayed(
-            () -> webView.loadUrl(FLASK_URL), SERVER_START_DELAY_MS);
+        setupWebView();
+        setupLoadingWebView();
+        setupFetchWebView();
+
+        loadingWebView.loadDataWithBaseURL(null, LOADING_HTML, "text/html", "UTF-8", null);
+
+        startFlaskServer();
+        waitForFlaskThenLaunch();
+    }
+
+    private void waitForFlaskThenLaunch() {
+        final long startTime = System.currentTimeMillis();
+
+        new Thread(() -> {
+            boolean serverReady = false;
+            long elapsed = 0;
+
+            while (elapsed < POLL_TIMEOUT_MS) {
+                try {
+                    Thread.sleep(POLL_INTERVAL_MS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                elapsed = System.currentTimeMillis() - startTime;
+
+                if (isPingReachable()) {
+                    serverReady = true;
+                    break;
+                }
+            }
+
+            final boolean ready = serverReady;
+            long remaining = MIN_LOADING_MS - (System.currentTimeMillis() - startTime);
+            long delay = Math.max(0, remaining);
+
+            mainHandler.postDelayed(() -> {
+                if (ready) {
+                    webView.loadUrl(FLASK_URL);
+                } else {
+                    Toast.makeText(this, "Server failed to start", Toast.LENGTH_LONG).show();
+                }
+                dismissLoadingOverlay();
+            }, delay);
+
+        }).start();
+    }
+
+    private boolean isPingReachable() {
+        try {
+            URL url = new URL("http://localhost:" + FLASK_PORT + "/ping");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(200);
+            conn.setReadTimeout(200);
+            conn.setRequestMethod("GET");
+            int code = conn.getResponseCode();
+            conn.disconnect();
+            return code == 200;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void dismissLoadingOverlay() {
+        loadingWebView.animate()
+            .alpha(0f)
+            .setDuration(300)
+            .withEndAction(() -> loadingWebView.setVisibility(View.GONE))
+            .start();
     }
 
     private void extractToybox() {
@@ -105,8 +173,6 @@ public class MainActivity extends Activity {
             e.printStackTrace();
         }
     }
-
-    // ── Fullscreen ────────────────────────────────────────────────────────────
 
     private void setupFullscreen() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -136,8 +202,6 @@ public class MainActivity extends Activity {
         if (hasFocus) setupFullscreen();
     }
 
-    // ── File access ───────────────────────────────────────────────────────────
-
     private void requestFileAccess() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
@@ -159,19 +223,14 @@ public class MainActivity extends Activity {
         }
     }
 
-    // When user comes back from the MANAGE_EXTERNAL_STORAGE settings page
     @Override
     protected void onResume() {
         super.onResume();
         if (returningFromSettings) {
             returningFromSettings = false;
-            // 500ms delay wait fix after returning from settings
-            new Handler(Looper.getMainLooper()).postDelayed(
-                () -> webView.loadUrl(FLASK_URL), 500);
+            mainHandler.postDelayed(() -> webView.loadUrl(FLASK_URL), 500);
         }
     }
-
-    // ── Flask server ──────────────────────────────────────────────────────────
 
     private void startFlaskServer() {
         Thread t = new Thread(() -> {
@@ -181,7 +240,7 @@ public class MainActivity extends Activity {
                 }
                 Python.getInstance().getModule("runner").callAttr("run");
             } catch (Exception e) {
-                new Handler(Looper.getMainLooper()).post(() ->
+                mainHandler.post(() ->
                     Toast.makeText(this, "Server error: " + e.getMessage(),
                         Toast.LENGTH_LONG).show());
             }
@@ -190,12 +249,18 @@ public class MainActivity extends Activity {
         t.start();
     }
 
-    // ── Hidden fetch WebView ──────────────────────────────────────────────────
+    @SuppressLint("SetJavaScriptEnabled")
+    private void setupLoadingWebView() {
+        WebSettings s = loadingWebView.getSettings();
+        s.setJavaScriptEnabled(true);
+        loadingWebView.setBackgroundColor(0xFF0A0A0A);
+        loadingWebView.setAlpha(1f);
+        loadingWebView.setVisibility(View.VISIBLE);
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     private void setupFetchWebView() {
         fetchWebView = new WebView(this);
-        // 1×1 pixel — invisible but alive in the view hierarchy
         addContentView(fetchWebView, new android.view.ViewGroup.LayoutParams(1, 1));
         WebSettings s = fetchWebView.getSettings();
         s.setJavaScriptEnabled(true);
@@ -206,12 +271,11 @@ public class MainActivity extends Activity {
             "Chrome/120.0.0.0 Mobile Safari/537.36");
     }
 
-    /** Called from Python via Chaquopy. Blocks until the page loads (max 20s). */
     public String fetchUrlSync(final String url) {
         final CountDownLatch latch = new CountDownLatch(1);
         final String[] result = {""};
 
-        new Handler(Looper.getMainLooper()).post(() ->  {
+        mainHandler.post(() -> {
             fetchWebView.setWebViewClient(new WebViewClient() {
                 private boolean done = false;
 
@@ -238,7 +302,6 @@ public class MainActivity extends Activity {
         try { latch.await(20, TimeUnit.SECONDS); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); }
 
-        // evaluateJavascript returns a JSON string — unwrap the outer quotes and unescape
         String html = result[0];
         if (html.length() >= 2 && html.charAt(0) == '"') {
             try {
@@ -247,8 +310,6 @@ public class MainActivity extends Activity {
         }
         return html;
     }
-
-    // ── WebView ───────────────────────────────────────────────────────────────
 
     @SuppressLint("SetJavaScriptEnabled")
     private void setupWebView() {
@@ -266,7 +327,6 @@ public class MainActivity extends Activity {
         });
     }
 
-    // JS Bridge interface
     class AndroidBridge {
         @JavascriptInterface
         public String getWorkingDir() {
@@ -317,23 +377,18 @@ public class MainActivity extends Activity {
         if (requestCode == REQUEST_FOLDER_PICKER && resultCode == RESULT_OK && data != null) {
             Uri treeUri = data.getData();
             if (treeUri == null) return;
-            
-            // 1. Take persistent permission immediately
+
             getContentResolver().takePersistableUriPermission(treeUri,
                 Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
 
-            // 2. Parse SAF URI path to bulletproof absolute POSIX path
             String path = treeUri.getPath();
             String authority = treeUri.getAuthority();
 
             if (path != null) {
                 if ("com.android.providers.downloads.documents".equals(authority)) {
-                    // Handles the case where user explicitly selects "Downloads" provider
                     selectedFolderPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath();
-                } 
-                else if (path.contains(":")) {
-                    // limit to 2 splits so folders with colons in name don't break
-                    String[] split = path.split(":", 2); 
+                } else if (path.contains(":")) {
+                    String[] split = path.split(":", 2);
                     String type = split[0];
                     String relativePath = split.length > 1 ? split[1] : "";
 
@@ -343,7 +398,6 @@ public class MainActivity extends Activity {
                             selectedFolderPath += "/" + relativePath;
                         }
                     } else {
-                        // External SD card
                         String volumeId = type.substring(type.lastIndexOf('/') + 1);
                         selectedFolderPath = "/storage/" + volumeId;
                         if (!relativePath.isEmpty()) {
@@ -358,7 +412,7 @@ public class MainActivity extends Activity {
             prefs.edit().putString("working_dir", selectedFolderPath).apply();
 
             final String finalPath = selectedFolderPath;
-            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            mainHandler.postDelayed(() -> {
                 if (webView != null) {
                     String escaped = finalPath.replace("\\", "\\\\").replace("'", "\\'");
                     webView.evaluateJavascript("setWorkingDir('" + escaped + "')", null);
@@ -366,8 +420,6 @@ public class MainActivity extends Activity {
             }, 500);
         }
     }
-
-    // ── Loading screen ────────────────────────────────────────────────────────
 
     private static final String LOADING_HTML =
         "<!DOCTYPE html><html><head>" +
