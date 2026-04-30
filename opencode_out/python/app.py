@@ -735,9 +735,7 @@ def _pencil_background(chat_id: str, model: str) -> None:
         raw = choices[0].get("message", {}).get("content", "").strip()
         # Strip markdown fences if model wraps response
         if raw.startswith("```"):
-            raw = re.sub(r"^```[a-z]*
-?|
-?```$", "", raw).strip()
+            raw = re.sub(r"^```[a-z]*\n?|\n?```$", "", raw).strip()
         parsed = json.loads(raw)
     except Exception:
         return
