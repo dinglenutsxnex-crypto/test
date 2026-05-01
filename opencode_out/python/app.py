@@ -373,11 +373,7 @@ def get_tools_for_agent(agent_name: str) -> list:
     if profile.get("no_tools", False):
         return []
     denied = profile.get("denied_tools", [])
-    tools = [t for t in TOOLS if t["function"]["name"] not in denied]
-    # Only give spawn_agent to agents that can delegate (build and plan)
-    if agent_name in ("build", "plan") and "spawn_agent" not in denied:
-        tools.append(SPAWN_AGENT_TOOL)
-    return tools
+    return [t for t in TOOLS if t["function"]["name"] not in denied]
 
 TOOLS = [
     {
