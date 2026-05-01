@@ -1301,18 +1301,21 @@ def chat():
                 yield f"data: {json.dumps({'type': 'tool_use', 'name': fn_name, 'args': args})}\n\n"
                 if fn_name == "spawn_agent":
                     sub_agent_id = args.get("agent_id", "build")
-                    yield f"data: {json.dumps({'type': 'subagent_start', 'agent': sub_agent_id})}\n\n"
+                    sub_task     = args.get("task", "")
+                    sub_context  = args.get("context", "")
+                    yield f"data: {json.dumps({'type': 'subagent_start', 'agent': sub_agent_id, 'task': sub_task, 'context': sub_context})}\n\n"
                     result = run_subagent(
                         agent_id    = sub_agent_id,
-                        task        = args.get("task", ""),
-                        context     = args.get("context", ""),
+                        task        = sub_task,
+                        context     = sub_context,
                         working_dirs= dirs,
                         model       = model,
                     )
-                    yield f"data: {json.dumps({'type': 'subagent_done', 'agent': sub_agent_id})}\n\n"
+                    yield f"data: {json.dumps({'type': 'subagent_done', 'agent': sub_agent_id, 'result': result[:4000]})}\n\n"
                 else:
                     result = run_tool(fn_name, args)
-                yield f"data: {json.dumps({'type': 'tool_done', 'name': fn_name})}\n\n"
+                # Truncate result for SSE (full result still goes to model via messages)
+                yield f"data: {json.dumps({'type': 'tool_done', 'name': fn_name, 'result': result[:4000] if result else ''})}\n\n"
 
                 # Rich tool-result turn
                 tr_turn = {

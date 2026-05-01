@@ -707,47 +707,128 @@ function createToolGroup() {
     return group;
 }
 
+function _toolPillIcon(name) {
+    const s = 'width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="flex-shrink:0"';
+    if (name === 'web_search' || name === 'grep')
+        return `<svg ${s} stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`;
+    if (name === 'glob')
+        return `<svg ${s} stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
+    if (name === 'read')
+        return `<svg ${s} stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+    if (name === 'write' || name === 'edit')
+        return `<svg ${s} stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+    if (name === 'shell')
+        return `<svg ${s} stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`;
+    if (name === 'web_fetch')
+        return `<svg ${s} stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>`;
+    return `<svg ${s} stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>`;
+}
+
+function _toolPillLabel(name, args) {
+    if (name === 'web_search')  return 'searching&nbsp;<em>' + escHtml(args.query||'') + '</em>';
+    if (name === 'glob')        return 'finding&nbsp;<em>' + escHtml(args.pattern||'') + '</em>';
+    if (name === 'grep')        return 'searching&nbsp;<em>' + escHtml(args.pattern||'') + '</em>';
+    if (name === 'read')        return 'reading&nbsp;<em>' + escHtml(args.filePath||'') + '</em>';
+    if (name === 'write')       return 'writing&nbsp;<em>' + escHtml(args.filePath||'') + '</em>';
+    if (name === 'edit')        return 'editing&nbsp;<em>' + escHtml(args.filePath||'') + '</em>';
+    if (name === 'shell')       return 'running&nbsp;<em>' + escHtml(args.command||'') + '</em>';
+    if (name === 'web_fetch')   return 'fetching&nbsp;<em>' + escHtml(args.url||'') + '</em>';
+    if (name === 'github_walk') return 'github&nbsp;<em>' + escHtml(args.repo||'') + '</em>';
+    return 'running&nbsp;<em>' + escHtml(name) + '</em>';
+}
+
+function _toolInputSummary(name, args) {
+    if (name === 'web_search')  return args.query || '';
+    if (name === 'glob')        return (args.pattern||'') + (args.path ? '\nin: ' + args.path : '');
+    if (name === 'grep')        return (args.pattern||'') + (args.path ? '\nin: ' + args.path : '') + (args.include ? '\ninclude: ' + args.include : '');
+    if (name === 'read')        return (args.filePath||'') + (args.offset != null ? '\noffset: ' + args.offset : '') + (args.limit != null ? '  limit: ' + args.limit : '');
+    if (name === 'write')       return (args.filePath||'') + '\n\n' + (args.content||'');
+    if (name === 'edit')        return (args.filePath||'') + '\n\n--- old ---\n' + (args.oldString||'') + '\n\n--- new ---\n' + (args.newString||'');
+    if (name === 'shell')       return (args.command||'') + (args.cwd ? '\ncwd: ' + args.cwd : '');
+    if (name === 'web_fetch')   return args.url || '';
+    if (name === 'github_walk') return (args.action||'tree') + '  ' + (args.repo||'') + (args.file_path ? '\n' + args.file_path : '');
+    return JSON.stringify(args, null, 2);
+}
+
+function _makeExpandPanel(inputText, outputText) {
+    const panel = document.createElement('div');
+    panel.className = 'tool-expand-panel';
+    panel.style.display = 'none';
+    let html = '<div class="tool-expand-section">'
+             + '<div class="tool-expand-label">input</div>'
+             + '<pre class="tool-expand-pre">' + escHtml(inputText) + '</pre>'
+             + '</div>';
+    if (outputText != null) {
+        html += '<div class="tool-expand-section">'
+              + '<div class="tool-expand-label">output</div>'
+              + '<pre class="tool-expand-pre">' + escHtml(String(outputText)) + '</pre>'
+              + '</div>';
+    }
+    panel.innerHTML = html;
+    return panel;
+}
+
 function createToolPill(name, args, group) {
     const container = group || chatEl;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'tool-pill-wrapper';
+
     const div = document.createElement('div');
     div.className = 'tool-pill';
-    let icon, label;
-    if (name === 'web_search') {
-        icon = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
-        label = 'searching&nbsp;<em>' + escHtml(args.query||'') + '</em>';
-    } else if (name === 'glob') {
-        icon = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
-        label = 'finding&nbsp;<em>' + escHtml(args.pattern||'') + '</em>';
-    } else if (name === 'grep') {
-        icon = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
-        label = 'searching&nbsp;<em>' + escHtml(args.pattern||'') + '</em>';
-    } else if (name === 'read') {
-        icon = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
-        label = 'reading&nbsp;<em>' + escHtml(args.filePath||'') + '</em>';
-    } else if (name === 'write') {
-        icon = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
-        label = 'writing&nbsp;<em>' + escHtml(args.filePath||'') + '</em>';
-    } else if (name === 'edit') {
-        icon = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
-        label = 'editing&nbsp;<em>' + escHtml(args.filePath||'') + '</em>';
-    } else {
-        icon = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><circle cx="12" cy="12" r="10"/></svg>';
-        label = 'running&nbsp;<em>' + escHtml(name) + '</em>';
-    }
-    div.innerHTML = '<span class="tool-spinner"></span>' + icon + '<span>' + label + '</span>';
-    container.appendChild(div);
+    div.style.cursor = 'pointer';
+    div.innerHTML = '<span class="tool-spinner"></span>' + _toolPillIcon(name) + '<span>' + _toolPillLabel(name, args) + '</span>';
+    wrapper.appendChild(div);
+
+    let expanded = false;
+    let panel = null;
+
+    div.onclick = () => {
+        if (!panel) return;
+        expanded = !expanded;
+        panel.style.display = expanded ? 'block' : 'none';
+        div.classList.toggle('tool-pill-open', expanded);
+    };
+
+    div._setResult = (result) => {
+        panel = _makeExpandPanel(_toolInputSummary(name, args), result);
+        wrapper.appendChild(panel);
+    };
+
+    container.appendChild(wrapper);
     scrollBottom();
     return div;
 }
 
-function createSubagentPill(agentId, group) {
+function createSubagentPill(agentId, task, context, group) {
     const container = group || chatEl;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'tool-pill-wrapper';
+
+    const s = 'width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0"';
+    const icon = `<svg ${s}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`;
     const div = document.createElement('div');
     div.className = 'tool-pill subagent-pill';
-    const icon = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>';
-    const label = '⚡&nbsp;<em>' + escHtml(agentId) + '</em>&nbsp;subagent';
-    div.innerHTML = '<span class="tool-spinner"></span>' + icon + '<span>' + label + '</span>';
-    container.appendChild(div);
+    div.style.cursor = 'pointer';
+    div.innerHTML = '<span class="tool-spinner"></span>' + icon + '<span>\u26a1&nbsp;<em>' + escHtml(agentId) + '</em>&nbsp;subagent</span>';
+    wrapper.appendChild(div);
+
+    let expanded = false;
+    let panel = null;
+
+    div.onclick = () => {
+        if (!panel) return;
+        expanded = !expanded;
+        panel.style.display = expanded ? 'block' : 'none';
+        div.classList.toggle('tool-pill-open', expanded);
+    };
+
+    div._setResult = (result) => {
+        const inputText = (context ? 'context:\n' + context + '\n\n---\n\ntask:\n' : 'task:\n') + task;
+        panel = _makeExpandPanel(inputText, result);
+        wrapper.appendChild(panel);
+    };
+
+    container.appendChild(wrapper);
     scrollBottom();
     return div;
 }
@@ -919,28 +1000,44 @@ async function send() {
                         if (!isActive()) break;
                         if (loadingDiv) { loadingDiv.remove(); loadingDiv = null; }
                         if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
-                        if (assistantDiv) { sealAssistant(assistantDiv, assistantText); assistantDiv = null; }
-                        if (!toolGroup) toolGroup = createToolGroup();
+                        if (assistantDiv) { sealAssistant(assistantDiv, assistantText); assistantDiv = null; assistantText = ''; }
+                        // Bug fix: always start a fresh tool-group after a thinking/text block
+                        // so new pills are never inserted into an old group above the thinking block.
+                        toolGroup = createToolGroup();
                         if (toolPill) toolPill.classList.add('done');
                         toolPill = createToolPill(ev.name, ev.args, toolGroup);
                         break;
                     }
                     case 'subagent_start': {
                         if (!isActive()) break;
+                        // subagent_start always fires right after tool_use (which already made a group)
+                        // so toolGroup is guaranteed to exist here.
                         if (!toolGroup) toolGroup = createToolGroup();
-                        if (toolPill) toolPill.classList.add('done');
-                        toolPill = createSubagentPill(ev.agent, toolGroup);
+                        // The tool_use pill above is already showing the spawn_agent call;
+                        // replace its spinner with a checkmark so only the subagent pill spins.
+                        if (toolPill) {
+                            const sp = toolPill.querySelector('.tool-spinner');
+                            if (sp) sp.outerHTML = '<span class="tool-check">\u2713</span>';
+                        }
+                        toolPill = createSubagentPill(ev.agent, ev.task||'', ev.context||'', toolGroup);
                         break;
                     }
                     case 'subagent_done': {
                         if (!isActive()) break;
-                        if (toolPill) toolPill.classList.add('done');
-                        toolPill = null;
+                        if (toolPill) {
+                            if (typeof toolPill._setResult === 'function') toolPill._setResult(ev.result||'');
+                            const sp = toolPill.querySelector('.tool-spinner');
+                            if (sp) sp.outerHTML = '<span class="tool-check">\u2713</span>';
+                            toolPill.classList.add('done');
+                            toolPill = null;
+                        }
+                        toolGroup = null;
                         break;
                     }
                     case 'tool_done': {
                         if (!isActive()) break;
                         if (toolPill) {
+                            if (typeof toolPill._setResult === 'function') toolPill._setResult(ev.result||'');
                             const spinner = toolPill.querySelector('.tool-spinner');
                             if (spinner) spinner.outerHTML = '<span class="tool-check">\u2713</span>';
                         }
