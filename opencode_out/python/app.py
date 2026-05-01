@@ -849,25 +849,36 @@ def tool_shell(command, cwd=None):
 
 
 def run_tool(name, args):
-    if name == "web_search":
-        return websearch(args.get("query", ""), args.get("num_results", 8))
-    elif name == "web_fetch":
-        return webfetch(args.get("url", ""))
-    elif name == "glob":
-        return tool_glob(args.get("pattern", "*"), args.get("path"))
-    elif name == "grep":
-        return tool_grep(args.get("pattern", ""), args.get("path"), args.get("include"))
-    elif name == "read":
-        return tool_read(args.get("filePath", ""), args.get("offset"), args.get("limit"))
-    elif name == "write":
-        return tool_write(args.get("content", ""), args.get("filePath", ""))
-    elif name == "github_walk":
-        return tool_github_walk(args.get("action", "tree"), args.get("repo", ""), args.get("file_path"), args.get("branch"))
-    elif name == "edit":
-        return tool_edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), args.get("replaceAll", False))
-    elif name == "shell":
-        return tool_shell(args.get("command", ""), args.get("cwd"))
-    return f"Unknown tool: {name}"
+    try:
+        if name == "web_search":
+            result = websearch(args.get("query", ""), args.get("num_results", 8))
+        elif name == "web_fetch":
+            result = webfetch(args.get("url", ""))
+        elif name == "glob":
+            result = tool_glob(args.get("pattern", "*"), args.get("path"))
+        elif name == "grep":
+            result = tool_grep(args.get("pattern", ""), args.get("path"), args.get("include"))
+        elif name == "read":
+            result = tool_read(args.get("filePath", ""), args.get("offset"), args.get("limit"))
+        elif name == "write":
+            result = tool_write(args.get("content", ""), args.get("filePath", ""))
+        elif name == "github_walk":
+            result = tool_github_walk(args.get("action", "tree"), args.get("repo", ""), args.get("file_path"), args.get("branch"))
+        elif name == "edit":
+            result = tool_edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), args.get("replaceAll", False))
+        elif name == "shell":
+            result = tool_shell(args.get("command", ""), args.get("cwd"))
+        else:
+            return f"Error: unknown tool '{name}'"
+    except Exception as e:
+        return f"Error: tool '{name}' raised an exception: {e}"
+
+    if result is None:
+        return f"Error: tool '{name}' returned no output. The operation may have failed or the path/query produced no results."
+    result = str(result).strip()
+    if not result:
+        return f"No results: tool '{name}' completed but returned empty output. The search/operation found nothing matching the given parameters."
+    return result
 
 
 

@@ -71,6 +71,9 @@ async function saveChats() {
     } catch {}
 }
 
+// Auto-save every 500ms — cheap op, just write JSON
+setInterval(saveChats, 500);
+
 async function loadChats() {
     try {
         const r = await fetch('/load_chats');
@@ -935,6 +938,7 @@ async function send() {
                             if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
                             if (assistantDiv)  { sealAssistant(assistantDiv, assistantText); assistantDiv = null; }
                             if (toolPill)      { toolPill.classList.add('done'); toolPill = null; toolGroup = null; }
+                            saveChats();
                         }
                         break;
                     }
