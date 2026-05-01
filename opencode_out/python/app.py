@@ -138,11 +138,38 @@ def is_within_dir(path, dir_path):
     return abs_path.startswith(abs_dir + os.sep) or abs_path == abs_dir
 
 # ── Prompts root ───────────────────────────────────────────────────────
-PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
-AGENTS_DIR  = os.path.join(PROMPTS_DIR, "agents")
+# Lives inside the user-accessible opencode dir (e.g. /sdcard/opencode/prompts/)
+# so the user can edit system.md and agent .md files directly.
+_BUNDLED_PROMPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
+
+def get_prompts_dir() -> str:
+    base = get_opencode_dir()
+    d    = os.path.join(base, "prompts")
+    os.makedirs(os.path.join(d, "agents"), exist_ok=True)
+    _seed_prompts(d)
+    return d
+
+def _seed_prompts(dest: str):
+    """Copy bundled prompt files to user dir if they don't exist yet."""
+    src = _BUNDLED_PROMPTS
+    if not os.path.isdir(src):
+        return
+    for root, dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        target_dir = os.path.join(dest, rel) if rel != "." else dest
+        os.makedirs(target_dir, exist_ok=True)
+        for fname in files:
+            dst_file = os.path.join(target_dir, fname)
+            src_file = os.path.join(root, fname)
+            if not os.path.isfile(dst_file):
+                try:
+                    import shutil
+                    shutil.copy2(src_file, dst_file)
+                except Exception:
+                    pass
 
 def _load_system_prompt() -> str:
-    path = os.path.join(PROMPTS_DIR, "system.md")
+    path = os.path.join(get_prompts_dir(), "system.md")
     try:
         with open(path, "r", encoding="utf-8") as f:
             return f.read().strip()
@@ -150,7 +177,8 @@ def _load_system_prompt() -> str:
         return ""
 
 def _load_agents() -> dict:
-    index_path = os.path.join(AGENTS_DIR, "index.json")
+    agents_dir = os.path.join(get_prompts_dir(), "agents")
+    index_path = os.path.join(agents_dir, "index.json")
     try:
         with open(index_path, "r", encoding="utf-8") as f:
             entries = json.load(f)
@@ -162,21 +190,19 @@ def _load_agents() -> dict:
         agent_id = entry.get("id", "")
         if not agent_id:
             continue
-        md_file = os.path.join(AGENTS_DIR, entry.get("file", f"{agent_id}.md"))
+        md_file = os.path.join(agents_dir, entry.get("file", f"{agent_id}.md"))
         try:
             with open(md_file, "r", encoding="utf-8") as f:
                 system_suffix = f.read().strip()
         except Exception:
             system_suffix = f"You are in {agent_id.upper()} mode."
 
-        allowed = entry.get("allowed_tools", None)
-        denied  = entry.get("denied_tools", [])
         profiles[agent_id] = {
             "name":          entry.get("name", agent_id),
             "description":   entry.get("description", ""),
             "system_suffix": system_suffix,
             "no_tools":      entry.get("no_tools", False),
-            "denied_tools":  denied,
+            "denied_tools":  entry.get("denied_tools", []),
         }
 
     return profiles
@@ -1214,6 +1240,11 @@ def list_agents():
         for agent_id, profile in AGENT_PROFILES.items()
     ]
     return jsonify({"agents": agents_list})
+
+
+@app.route("/prompts_dir", methods=["GET"])
+def prompts_dir_route():
+    return jsonify({"path": get_prompts_dir()})
 
 
 @app.route("/reload_agents", methods=["POST"])

@@ -502,22 +502,26 @@ async function loadAgents() {
         const r = await fetch('/agents');
         const d = await r.json();
         const agents = d.agents || [];
-        const label  = agentDropdown.querySelector('.model-dropdown-label');
-        agentDropdown.innerHTML = '';
-        if (label) agentDropdown.appendChild(label);
+        if (!agents.length) return;
+
+        const labelEl = agentDropdown.querySelector('.model-dropdown-label');
+        const labelText = labelEl ? labelEl.textContent : 'Agent Mode';
+        agentDropdown.innerHTML = '<div class="model-dropdown-label">' + escHtml(labelText) + '</div>';
+
         agents.forEach((agent, i) => {
             const btn = document.createElement('button');
-            btn.className = 'agent-option' + (i === 0 ? ' active' : '');
+            btn.className = 'agent-option' + (agent.id === selectedAgent ? ' active' : '');
             btn.dataset.agent = agent.id;
             btn.innerHTML =
                 '<span class="agent-name">' + escHtml(agent.name) + '</span>' +
                 '<span class="agent-desc">' + escHtml(agent.description) + '</span>';
             agentDropdown.appendChild(btn);
         });
-        if (agents.length > 0) {
-            selectedAgent = agents[0].id;
-            agentLabel.textContent = agents[0].name;
-        }
+
+        const firstMatch = agents.find(a => a.id === selectedAgent) || agents[0];
+        selectedAgent = firstMatch.id;
+        agentLabel.textContent = firstMatch.name;
+
         bindAgentOptions();
     } catch {
         bindAgentOptions();
