@@ -322,13 +322,62 @@ def reload_agents():
     SYSTEM_PROMPT_BASE = _load_system_prompt()
     AGENT_PROFILES     = _load_agents()
 
+SPAWN_AGENT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "spawn_agent",
+        "description": (
+            "Delegate a self-contained task to a specialized subagent. "
+            "The subagent runs to completion and returns its full output. "
+            "Use this to parallelize work, delegate read-only analysis before writing, "
+            "or break large tasks into focused subtasks.\n\n"
+            "Agents:\n"
+            "- build: full read/write/execute — use for actual code changes\n"
+            "- plan: read-only analysis — use to map out changes before build does them\n"
+            "- explore: read-only, no web — use for fast structural questions about the codebase\n"
+            "- ask: no tools at all — use for pure reasoning, summarization, or drafting"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string",
+                    "enum": ["build", "plan", "explore", "ask"],
+                    "description": "Which agent profile to run"
+                },
+                "task": {
+                    "type": "string",
+                    "description": (
+                        "The complete task description. Be specific — the subagent has no "
+                        "context from the main conversation. Include file paths, exact "
+                        "requirements, and expected output format."
+                    )
+                },
+                "context": {
+                    "type": "string",
+                    "description": (
+                        "Optional extra context to prepend to the task — e.g. paste in a "
+                        "relevant file snippet, an error message, or a prior subagent's "
+                        "output that this agent needs."
+                    )
+                }
+            },
+            "required": ["agent_id", "task"]
+        }
+    }
+}
+
 def get_tools_for_agent(agent_name: str) -> list:
     fallback = list(AGENT_PROFILES.values())[0] if AGENT_PROFILES else {}
     profile  = AGENT_PROFILES.get(agent_name, fallback)
     if profile.get("no_tools", False):
         return []
     denied = profile.get("denied_tools", [])
-    return [t for t in TOOLS if t["function"]["name"] not in denied]
+    tools = [t for t in TOOLS if t["function"]["name"] not in denied]
+    # Only give spawn_agent to agents that can delegate (build and plan)
+    if agent_name in ("build", "plan") and "spawn_agent" not in denied:
+        tools.append(SPAWN_AGENT_TOOL)
+    return tools
 
 TOOLS = [
     {
@@ -848,6 +897,114 @@ def tool_shell(command, cwd=None):
         return f"Shell error: {e}"
 
 
+def run_subagent(agent_id: str, task: str, context: str = "",
+                 working_dirs: list = None, model: str = None,
+                 depth: int = 0) -> str:
+    """
+    Run an agent profile as a subagent. Blocks until done, returns text output.
+    depth prevents infinite recursion — subagents at depth >= MAX_DEPTH
+    do not get the spawn_agent tool.
+    """
+    MAX_DEPTH = 2  # main(0) → sub(1) → sub-sub(2) → no more spawning
+
+    profile = AGENT_PROFILES.get(agent_id)
+    if not profile:
+        return f"Error: unknown agent '{agent_id}'"
+
+    # Build tool list for this agent — strip spawn_agent if at max depth
+    active_tools = get_tools_for_agent(agent_id)
+    if depth >= MAX_DEPTH:
+        active_tools = [t for t in active_tools
+                        if t["function"]["name"] != "spawn_agent"]
+
+    # System message using the agent's profile suffix
+    dirs = working_dirs or ([working_dir] if working_dir else [])
+    agent_suffix = profile.get("system_suffix", "")
+    base_prompt = (SYSTEM_PROMPT_BASE + "\n\n") if SYSTEM_PROMPT_BASE else ""
+
+    if dirs:
+        hints = []
+        for d in dirs:
+            try:
+                files = sorted(os.listdir(d))[:30]
+                hints.append(f"Folder: {d}\n" + "\n".join(files))
+            except Exception:
+                hints.append(f"Folder: {d} (unreadable)")
+        dir_info = "\n\n".join(hints)
+        system_content = f"{base_prompt}You are a subagent. {dir_info}\n\n---\n{agent_suffix}"
+    else:
+        system_content = f"{base_prompt}You are a subagent.\n\n---\n{agent_suffix}"
+
+    # Build initial messages
+    user_content = task
+    if context:
+        user_content = f"Context:\n{context}\n\n---\n\nTask:\n{task}"
+
+    messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user",   "content": user_content},
+    ]
+
+    # Tool loop — synchronous, non-streaming version of generate()
+    for _round in range(20):  # hard cap to prevent infinite loops
+        payload = {
+            "model": model or MODEL,
+            "messages": messages,
+            "max_tokens": MAX_TOKENS,
+        }
+        if active_tools:
+            payload["tools"] = active_tools
+            payload["tool_choice"] = "auto"
+
+        try:
+            resp = requests.post(API_URL, json=payload, timeout=300)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            return f"Error: subagent API call failed: {e}"
+
+        choice  = (data.get("choices") or [{}])[0]
+        message = choice.get("message", {})
+        content = message.get("content") or ""
+        tool_calls = message.get("tool_calls") or []
+
+        if not tool_calls:
+            # Final answer
+            return content.strip() or "(subagent returned no output)"
+
+        # Execute tool calls and loop
+        messages.append({"role": "assistant", "content": content,
+                         "tool_calls": tool_calls})
+
+        for tc in tool_calls:
+            fn_name = tc["function"]["name"]
+            try:
+                args = json.loads(tc["function"]["arguments"])
+            except json.JSONDecodeError:
+                args = {}
+
+            if fn_name == "spawn_agent":
+                # Recursive subagent call — pass depth+1
+                result = run_subagent(
+                    agent_id    = args.get("agent_id", "build"),
+                    task        = args.get("task", ""),
+                    context     = args.get("context", ""),
+                    working_dirs= working_dirs,
+                    model       = model,
+                    depth       = depth + 1,
+                )
+            else:
+                result = run_tool(fn_name, args)
+
+            messages.append({
+                "role":         "tool",
+                "tool_call_id": tc["id"],
+                "content":      result,
+            })
+
+    return "(subagent hit round limit without producing a final answer)"
+
+
 def run_tool(name, args):
     try:
         if name == "web_search":
@@ -868,6 +1025,14 @@ def run_tool(name, args):
             result = tool_edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), args.get("replaceAll", False))
         elif name == "shell":
             result = tool_shell(args.get("command", ""), args.get("cwd"))
+        elif name == "spawn_agent":
+            dirs = working_dirs if working_dirs else ([working_dir] if working_dir else [])
+            result = run_subagent(
+                agent_id    = args.get("agent_id", "build"),
+                task        = args.get("task", ""),
+                context     = args.get("context", ""),
+                working_dirs= dirs,
+            )
         else:
             return f"Error: unknown tool '{name}'"
     except Exception as e:
@@ -1134,7 +1299,19 @@ def chat():
                     args = {}
 
                 yield f"data: {json.dumps({'type': 'tool_use', 'name': fn_name, 'args': args})}\n\n"
-                result = run_tool(fn_name, args)
+                if fn_name == "spawn_agent":
+                    sub_agent_id = args.get("agent_id", "build")
+                    yield f"data: {json.dumps({'type': 'subagent_start', 'agent': sub_agent_id})}\n\n"
+                    result = run_subagent(
+                        agent_id    = sub_agent_id,
+                        task        = args.get("task", ""),
+                        context     = args.get("context", ""),
+                        working_dirs= dirs,
+                        model       = model,
+                    )
+                    yield f"data: {json.dumps({'type': 'subagent_done', 'agent': sub_agent_id})}\n\n"
+                else:
+                    result = run_tool(fn_name, args)
                 yield f"data: {json.dumps({'type': 'tool_done', 'name': fn_name})}\n\n"
 
                 # Rich tool-result turn

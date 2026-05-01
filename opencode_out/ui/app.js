@@ -740,6 +740,18 @@ function createToolPill(name, args, group) {
     return div;
 }
 
+function createSubagentPill(agentId, group) {
+    const container = group || chatEl;
+    const div = document.createElement('div');
+    div.className = 'tool-pill subagent-pill';
+    const icon = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>';
+    const label = '⚡&nbsp;<em>' + escHtml(agentId) + '</em>&nbsp;subagent';
+    div.innerHTML = '<span class="tool-spinner"></span>' + icon + '<span>' + label + '</span>';
+    container.appendChild(div);
+    scrollBottom();
+    return div;
+}
+
 // ── Auto-title ────────────────────────────────────────────────────────
 async function autoTitle(chatId, userMsg) {
     const chat = chats.find(c => c.id === chatId);
@@ -911,6 +923,19 @@ async function send() {
                         if (!toolGroup) toolGroup = createToolGroup();
                         if (toolPill) toolPill.classList.add('done');
                         toolPill = createToolPill(ev.name, ev.args, toolGroup);
+                        break;
+                    }
+                    case 'subagent_start': {
+                        if (!isActive()) break;
+                        if (!toolGroup) toolGroup = createToolGroup();
+                        if (toolPill) toolPill.classList.add('done');
+                        toolPill = createSubagentPill(ev.agent, toolGroup);
+                        break;
+                    }
+                    case 'subagent_done': {
+                        if (!isActive()) break;
+                        if (toolPill) toolPill.classList.add('done');
+                        toolPill = null;
                         break;
                     }
                     case 'tool_done': {
