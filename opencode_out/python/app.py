@@ -552,59 +552,62 @@ def _android_webview_fetch(url):
 
 
 def websearch(query, num_results=8):
-    import urllib.parse
-    encoded = urllib.parse.quote(query)
+    from html.parser import HTMLParser
 
-    html = _android_webview_fetch(f"https://html.duckduckgo.com/html/?q={encoded}")
-    if html:
-        titles   = re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, re.DOTALL)
-        urls     = re.findall(r'class="result__url"[^>]*>(.*?)</span>', html, re.DOTALL)
-        snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
-        titles   = [re.sub(r'<[^>]+>', '', t).strip() for t in titles]
-        urls     = [u.strip() for u in urls]
-        snippets = [re.sub(r'<[^>]+>', '', s).strip() for s in snippets]
-        results  = list(zip(titles, urls, snippets))[:num_results]
-        if results:
-            lines = [f"Search results for: **{query}**\n"]
-            for i, (title, url, snippet) in enumerate(results, 1):
-                lines.append(f"{i}. **{title}**")
-                if url:     lines.append(f"   {url}")
-                if snippet: lines.append(f"   {snippet}")
-                lines.append("")
-            return "\n".join(lines)
+    class DDGParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.results = []
+            self._cur = None
+            self._capture = None
 
-    try:
-        resp = requests.get(
-            f"https://s.jina.ai/?q={encoded}",
-            headers={"Accept": "text/plain", "User-Agent": "Mozilla/5.0"},
-            timeout=30
-        )
-        if resp.status_code == 200 and resp.text.strip():
-            return resp.text.strip()[:30000]
-    except Exception:
-        pass
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            cls = attrs.get('class', '')
+            if tag == 'div' and 'result' in cls and 'result__body' in cls:
+                self._cur = {'title': '', 'url': '', 'snippet': ''}
+            if self._cur is None:
+                return
+            if tag == 'a' and 'result__a' in cls:
+                self._capture = 'title'
+            elif tag == 'span' and 'result__url' in cls:
+                self._capture = 'url'
+            elif tag == 'a' and 'result__snippet' in cls:
+                self._capture = 'snippet'
+
+        def handle_endtag(self, tag):
+            if self._capture and tag in ('a', 'span'):
+                self._capture = None
+            if tag == 'div' and self._cur and self._cur.get('title'):
+                self.results.append(self._cur)
+                self._cur = None
+
+        def handle_data(self, data):
+            if self._capture and self._cur is not None:
+                self._cur[self._capture] += data
 
     try:
         resp = requests.get(
             "https://html.duckduckgo.com/html/",
             params={"q": query},
-            headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"},
+            headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
             timeout=30
         )
-        titles   = re.findall(r'class="result__a"[^>]*>(.*?)</a>', resp.text, re.DOTALL)
-        urls     = re.findall(r'class="result__url"[^>]*>(.*?)</span>', resp.text, re.DOTALL)
-        snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', resp.text, re.DOTALL)
-        titles   = [re.sub(r'<[^>]+>', '', t).strip() for t in titles]
-        urls     = [u.strip() for u in urls]
-        snippets = [re.sub(r'<[^>]+>', '', s).strip() for s in snippets]
-        results  = list(zip(titles, urls, snippets))[:num_results]
+        resp.raise_for_status()
+        parser = DDGParser()
+        parser.feed(resp.text)
+        results = parser.results[:num_results]
         if not results:
             return f"No results found for: {query}"
         lines = [f"Search results for: **{query}**\n"]
-        for i, (title, url, snippet) in enumerate(results, 1):
-            lines.append(f"{i}. **{title}**")
-            if url:     lines.append(f"   {url}")
-            if snippet: lines.append(f"   {snippet}")
+        for i, r in enumerate(results, 1):
+            lines.append(f"{i}. **{r['title'].strip()}**")
+            url = r['url'].strip()
+            if url:
+                lines.append(f"   {url}")
+            snippet = r['snippet'].strip()
+            if snippet:
+                lines.append(f"   {snippet}")
             lines.append("")
         return "\n".join(lines)
     except Exception as e:

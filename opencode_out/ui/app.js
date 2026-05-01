@@ -785,7 +785,7 @@ function createToolPill(name, args, group) {
     div.onclick = () => {
         if (!panel) return;
         expanded = !expanded;
-        panel.style.display = expanded ? 'block' : 'none';
+        panel.classList.toggle('open', expanded);
         div.classList.toggle('tool-pill-open', expanded);
     };
 
@@ -818,7 +818,7 @@ function createSubagentPill(agentId, task, context, group) {
     div.onclick = () => {
         if (!panel) return;
         expanded = !expanded;
-        panel.style.display = expanded ? 'block' : 'none';
+        panel.classList.toggle('open', expanded);
         div.classList.toggle('tool-pill-open', expanded);
     };
 
