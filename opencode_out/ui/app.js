@@ -104,12 +104,36 @@ function truncatePath(p) {
 // ── Send button state ─────────────────────────────────────────────────
 // Only disable the send button if the *currently active* chat is sending.
 // Other chats streaming in the background do not affect this chat's button.
+let currentReader = null;
+
+function stopGeneration() {
+    if (currentReader) {
+        try { currentReader.cancel(); } catch {}
+        currentReader = null;
+    }
+    if (activeChatId) {
+        sendingChats.delete(activeChatId);
+        delete chatStreamState[activeChatId];
+    }
+    renderChatList();
+    updateSendButton();
+    input.focus();
+}
+
 function updateSendButton() {
     const busy = sendingChats.has(activeChatId);
-    sendBtn.disabled = busy;
-    sendBtn.innerHTML = busy
-        ? '<span class="dots"><span></span><span></span><span></span></span>'
-        : '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
+    sendBtn.disabled = false;
+    if (busy) {
+        sendBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>';
+        sendBtn.title = 'Stop';
+        sendBtn.onclick = stopGeneration;
+        sendBtn.classList.add('stop-mode');
+    } else {
+        sendBtn.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>';
+        sendBtn.title = 'Send';
+        sendBtn.onclick = send;
+        sendBtn.classList.remove('stop-mode');
+    }
 }
 
 // ── Folder bar ────────────────────────────────────────────────────────
@@ -738,6 +762,15 @@ async function send() {
     let toolPill      = null;
     let toolGroup     = null;
     let assistantText = '';
+    let loadingDiv    = null;
+
+    if (isActive()) {
+        loadingDiv = document.createElement('div');
+        loadingDiv.className = 'msg-loading';
+        loadingDiv.innerHTML = '<span class="loading-ring"></span>';
+        chatEl.appendChild(loadingDiv);
+        scrollBottom();
+    }
 
     let keepAliveTimer = setInterval(async () => {
         try { await fetch('/ping', { method: 'GET' }); } catch {}
@@ -757,6 +790,7 @@ async function send() {
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
 
         const reader  = resp.body.getReader();
+        currentReader = reader;
         const decoder = new TextDecoder();
         let buf = '';
 
@@ -777,6 +811,7 @@ async function send() {
                 switch (ev.type) {
                     case 'thinking': {
                         if (!isActive()) break;
+                        if (loadingDiv) { loadingDiv.remove(); loadingDiv = null; }
                         if (!thinkingBlock) thinkingBlock = createThinkingBlock();
                         if (!thinkingBlock._indicator) {
                             thinkingBlock._indicator = true;
@@ -789,11 +824,11 @@ async function send() {
                     }
                     case 'text': {
                         assistantText += ev.text;
-                        // Always keep stream state up-to-date for background chats
                         chatStreamState[sendingChatId] = { assistantText, hasContent: true };
 
-                        if (!isActive()) break; // don't touch DOM for background chat
+                        if (!isActive()) break;
 
+                        if (loadingDiv) { loadingDiv.remove(); loadingDiv = null; }
                         if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
                         if (toolPill) { toolPill.classList.add('done'); toolPill = null; toolGroup = null; }
 
@@ -811,6 +846,7 @@ async function send() {
                     }
                     case 'tool_use': {
                         if (!isActive()) break;
+                        if (loadingDiv) { loadingDiv.remove(); loadingDiv = null; }
                         if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
                         if (assistantDiv) { sealAssistant(assistantDiv, assistantText); assistantDiv = null; }
                         if (!toolGroup) toolGroup = createToolGroup();
@@ -878,8 +914,8 @@ async function send() {
     }
 
     clearInterval(keepAliveTimer);
+    currentReader = null;
 
-    // Unmark this chat as busy
     sendingChats.delete(sendingChatId);
     delete chatStreamState[sendingChatId];
 
@@ -892,7 +928,14 @@ async function send() {
 }
 
 sendBtn.onclick = send;
-input.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
+input.onkeydown = e => {
+    if (e.key === 'Enter') {
+        if (e.shiftKey || e.ctrlKey) {
+            e.preventDefault();
+            send();
+        }
+    }
+};
 input.oninput = () => {
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight, 120) + 'px';

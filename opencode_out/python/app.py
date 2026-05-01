@@ -142,24 +142,24 @@ def is_within_dir(path, dir_path):
 # Inspired by opencode's build / plan / explore / ask agents.
 AGENT_PROFILES = {
     "build": {
-        "description": "Default full-access agent for development work.",
+        "description": "Default full-access coding agent for development work.",
         "system_suffix": (
-            "You are in BUILD mode — a full-access coding agent.\n"
+            "You are a coding assistant in BUILD mode.\n"
             "You can read, write, edit files, run shell commands, search the web, and explore GitHub repos.\n"
-            "Be proactive: fix bugs, write code, and complete tasks end-to-end.\n"
-            "NEVER revert changes you didn't make. Prefer surgical edits over full rewrites."
+            "Be direct and concise. No unnecessary preamble, no enthusiasm theater.\n"
+            "For simple questions, answer in 1-2 sentences. Only elaborate when the task genuinely requires it.\n"
+            "When coding: fix bugs, write code, complete tasks end-to-end. Prefer surgical edits over full rewrites.\n"
+            "NEVER revert changes you didn't make."
         ),
-        "allowed_tools": None,  # None = all tools allowed
+        "allowed_tools": None,
         "denied_tools": [],
     },
     "plan": {
         "description": "Read-only analysis agent — no file writes or shell commands.",
         "system_suffix": (
-            "You are in PLAN mode — a restricted read-only agent for analysis and planning.\n"
-            "You MAY use: read, glob, grep, web_search, web_fetch, github_walk.\n"
-            "You MUST NOT write, edit, or run shell commands.\n"
-            "Your job is to analyze code, explain changes that SHOULD be made, and produce detailed plans.\n"
-            "State your plan clearly in numbered steps. Do not execute the plan."
+            "You are a coding assistant in PLAN mode — read-only, no writes or shell commands.\n"
+            "Analyze code and produce clear, numbered plans. Be concise.\n"
+            "You MAY use: read, glob, grep, web_search, web_fetch, github_walk."
         ),
         "allowed_tools": None,
         "denied_tools": ["write", "edit", "shell"],
@@ -167,11 +167,9 @@ AGENT_PROFILES = {
     "explore": {
         "description": "Fast read-only codebase search — grep, glob, read only.",
         "system_suffix": (
-            "You are in EXPLORE mode — a fast, read-only codebase search agent.\n"
-            "You MAY use: read, glob, grep, github_walk.\n"
-            "You MUST NOT use web_search, web_fetch, write, edit, or shell.\n"
-            "Focus on quickly finding files, locating code patterns, and answering structural questions about the codebase.\n"
-            "Be concise and precise. Return file paths and line numbers where relevant."
+            "You are a coding assistant in EXPLORE mode — read-only codebase search.\n"
+            "Return file paths and line numbers. Be brief.\n"
+            "You MAY use: read, glob, grep, github_walk."
         ),
         "allowed_tools": ["read", "glob", "grep", "github_walk"],
         "denied_tools": [],
@@ -179,11 +177,10 @@ AGENT_PROFILES = {
     "ask": {
         "description": "Pure Q&A — no tools, no file access.",
         "system_suffix": (
-            "You are in ASK mode — a pure question-answering assistant with NO tool access.\n"
-            "Do not attempt to use any tools. Answer entirely from your own knowledge.\n"
-            "If a question requires inspecting code or files, explain that the user should switch to build or explore mode."
+            "You are a direct Q&A assistant in ASK mode — no tool access.\n"
+            "Answer concisely from your knowledge. No fluff."
         ),
-        "allowed_tools": [],  # Empty list = no tools at all
+        "allowed_tools": [],
         "denied_tools": [],
     },
 }
@@ -834,6 +831,10 @@ def chat():
     agent_suffix  = agent_profile["system_suffix"]
     active_tools  = get_tools_for_agent(agent_name)
 
+    from datetime import datetime
+    now_str = datetime.now().strftime("%A, %B %d, %Y %H:%M")
+    datetime_line = f"Current date/time: {now_str}\n\n"
+
     if dirs:
         hints = []
         for d in dirs:
@@ -843,9 +844,9 @@ def chat():
             except Exception:
                 hints.append(f"Folder: {d} (unreadable)")
         dir_info = "\n\n".join(hints)
-        system_msg = {"role": "system", "content": f"You have access to {len(dirs)} project folder(s):\n\n{dir_info}\n\nAlways use tools relative to these directories. Never navigate above them.\n\n---\n{agent_suffix}"}
+        system_msg = {"role": "system", "content": f"{datetime_line}You have access to {len(dirs)} project folder(s):\n\n{dir_info}\n\nAlways use tools relative to these directories. Never navigate above them.\n\n---\n{agent_suffix}"}
     else:
-        system_msg = {"role": "system", "content": f"No working directory set. Ask user to select a project folder first.\n\n---\n{agent_suffix}"}
+        system_msg = {"role": "system", "content": f"{datetime_line}No working directory set. Ask user to select a project folder first.\n\n---\n{agent_suffix}"}
 
     def generate():
         import time
