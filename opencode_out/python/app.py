@@ -102,9 +102,10 @@ def get_opencode_dir():
                 with open(storage_file, "r") as f:
                     external_path = f.read().strip()
                 if external_path and os.path.isdir(external_path):
-                    d = os.path.join(external_path, "opencode")
-                    os.makedirs(d, exist_ok=True)
-                    return d
+                    # external_path already IS the opencode dir (Java writes
+                    # /sdcard/opencode into storage_dir.txt, not just /sdcard)
+                    os.makedirs(external_path, exist_ok=True)
+                    return external_path
             except Exception:
                 pass
     base = "/storage/emulated/0"
@@ -140,7 +141,9 @@ def is_within_dir(path, dir_path):
 # ── Prompts root ───────────────────────────────────────────────────────
 # Lives inside the user-accessible opencode dir (e.g. /sdcard/opencode/prompts/)
 # so the user can edit system.md and agent .md files directly.
-_BUNDLED_PROMPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
+_BUNDLED_PROMPTS = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "prompts")
 
 def get_prompts_dir() -> str:
     base = get_opencode_dir()
