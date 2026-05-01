@@ -801,7 +801,11 @@ async function send() {
         const snapshot = [...(chat.history || []), { id: 'u_pending_' + Date.now(), role: 'user', content: userMsg, _pending: true }];
         chat.history = snapshot;
         saveChats();
-        chat.history = snapshot.slice(0, -1); // drop pending; real turn comes via history_update
+        // Keep user message in history during streaming (without _pending flag)
+        // so autosave always has at minimum the user turn.
+        // history_update at stream end overwrites with the authoritative version.
+        chat.history = [...(chat.history || []).filter(t => !t._pending),
+                        { id: 'u_' + Date.now(), role: 'user', content: userMsg }];
     }
 
     let thinkingBlock = null;
@@ -873,6 +877,14 @@ async function send() {
                         assistantText += ev.text;
                         chatStreamState[sendingChatId] = { assistantText, hasContent: true };
 
+                        // Bruteforce: keep chat.history current during streaming.
+                        // 500ms autosave will pick this up so partial response is never lost.
+                        // history_update at stream end replaces with the authoritative version.
+                        if (chat) {
+                            const base = (chat.history || []).filter(t => !t._partial);
+                            chat.history = [...base, { id: 'a_partial', role: 'assistant', content: assistantText, _partial: true }];
+                        }
+
                         if (!isActive()) break;
 
                         if (loadingDiv) { loadingDiv.remove(); loadingDiv = null; }
@@ -914,9 +926,7 @@ async function send() {
                     }
 
                     case 'history_update': {
-                        // Update the chat's stored history but DON'T re-render the DOM —
-                        // the live stream is already painting the messages correctly.
-                        // Re-rendering here would wipe the streamed content.
+                        // Overwrites the partial streaming history with the authoritative version.
                         if (chat) {
                             chat.history = ev.history;
                             saveChats();
