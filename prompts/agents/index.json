@@ -28,7 +28,7 @@
     "name": "ask",
     "description": "No tools — pure Q&A, no file access",
     "file": "ask.md",
-    "no_tools": true,m
+    "no_tools": true,
     "denied_tools": []
   },
   {
