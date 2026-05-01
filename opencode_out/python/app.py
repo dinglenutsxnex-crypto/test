@@ -137,70 +137,65 @@ def is_within_dir(path, dir_path):
     abs_dir = os.path.abspath(dir_path)
     return abs_path.startswith(abs_dir + os.sep) or abs_path == abs_dir
 
-# ── Agent profiles ─────────────────────────────────────────────────────
-# Each profile defines a system prompt suffix and which tools are allowed.
-# Inspired by opencode's build / plan / explore / ask agents.
-AGENT_PROFILES = {
-    "build": {
-        "description": "Default full-access coding agent for development work.",
-        "system_suffix": (
-            "You are a coding assistant in BUILD mode.\n"
-            "You can read, write, edit files, run shell commands, search the web, and explore GitHub repos.\n"
-            "Be direct and concise. No unnecessary preamble, no enthusiasm theater.\n"
-            "For simple questions, answer in 1-2 sentences. Only elaborate when the task genuinely requires it.\n"
-            "When coding: fix bugs, write code, complete tasks end-to-end. Prefer surgical edits over full rewrites.\n"
-            "NEVER revert changes you didn't make."
-        ),
-        "allowed_tools": None,
-        "denied_tools": [],
-    },
-    "plan": {
-        "description": "Read-only analysis agent — no file writes or shell commands.",
-        "system_suffix": (
-            "You are a coding assistant in PLAN mode — read-only, no writes or shell commands.\n"
-            "Analyze code and produce clear, numbered plans. Be concise.\n"
-            "You MAY use: read, glob, grep, web_search, web_fetch, github_walk."
-        ),
-        "allowed_tools": None,
-        "denied_tools": ["write", "edit", "shell"],
-    },
-    "explore": {
-        "description": "Fast read-only codebase search — grep, glob, read only.",
-        "system_suffix": (
-            "You are a coding assistant in EXPLORE mode — read-only codebase search.\n"
-            "Return file paths and line numbers. Be brief.\n"
-            "You MAY use: read, glob, grep, github_walk."
-        ),
-        "allowed_tools": ["read", "glob", "grep", "github_walk"],
-        "denied_tools": [],
-    },
-    "ask": {
-        "description": "Pure Q&A — no tools, no file access.",
-        "system_suffix": (
-            "You are a direct Q&A assistant in ASK mode — no tool access.\n"
-            "Answer concisely from your knowledge. No fluff."
-        ),
-        "allowed_tools": [],
-        "denied_tools": [],
-    },
-}
+# ── Prompts root ───────────────────────────────────────────────────────
+PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
+AGENTS_DIR  = os.path.join(PROMPTS_DIR, "agents")
+
+def _load_system_prompt() -> str:
+    path = os.path.join(PROMPTS_DIR, "system.md")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+def _load_agents() -> dict:
+    index_path = os.path.join(AGENTS_DIR, "index.json")
+    try:
+        with open(index_path, "r", encoding="utf-8") as f:
+            entries = json.load(f)
+    except Exception:
+        entries = []
+
+    profiles = {}
+    for entry in entries:
+        agent_id = entry.get("id", "")
+        if not agent_id:
+            continue
+        md_file = os.path.join(AGENTS_DIR, entry.get("file", f"{agent_id}.md"))
+        try:
+            with open(md_file, "r", encoding="utf-8") as f:
+                system_suffix = f.read().strip()
+        except Exception:
+            system_suffix = f"You are in {agent_id.upper()} mode."
+
+        allowed = entry.get("allowed_tools", None)
+        denied  = entry.get("denied_tools", [])
+        profiles[agent_id] = {
+            "name":          entry.get("name", agent_id),
+            "description":   entry.get("description", ""),
+            "system_suffix": system_suffix,
+            "no_tools":      entry.get("no_tools", False),
+            "denied_tools":  denied,
+        }
+
+    return profiles
+
+SYSTEM_PROMPT_BASE = _load_system_prompt()
+AGENT_PROFILES     = _load_agents()
+
+def reload_agents():
+    global SYSTEM_PROMPT_BASE, AGENT_PROFILES
+    SYSTEM_PROMPT_BASE = _load_system_prompt()
+    AGENT_PROFILES     = _load_agents()
 
 def get_tools_for_agent(agent_name: str) -> list:
-    """Return the filtered TOOLS list for the given agent profile."""
-    profile = AGENT_PROFILES.get(agent_name, AGENT_PROFILES["build"])
-    allowed = profile.get("allowed_tools")
-    denied  = profile.get("denied_tools", [])
-    if allowed is not None and len(allowed) == 0:
-        return []  # ask mode: no tools
-    filtered = []
-    for tool in TOOLS:
-        name = tool["function"]["name"]
-        if allowed is not None and name not in allowed:
-            continue
-        if name in denied:
-            continue
-        filtered.append(tool)
-    return filtered
+    fallback = list(AGENT_PROFILES.values())[0] if AGENT_PROFILES else {}
+    profile  = AGENT_PROFILES.get(agent_name, fallback)
+    if profile.get("no_tools", False):
+        return []
+    denied = profile.get("denied_tools", [])
+    return [t for t in TOOLS if t["function"]["name"] not in denied]
 
 TOOLS = [
     {
@@ -827,12 +822,13 @@ def chat():
         history.append({"id": _next_id(chat_id, "u"), "role": "user", "content": user_msg})
 
     dirs = working_dirs if working_dirs else ([working_dir] if working_dir else [])
-    agent_profile = AGENT_PROFILES.get(agent_name, AGENT_PROFILES["build"])
-    agent_suffix  = agent_profile["system_suffix"]
+    agent_profile = AGENT_PROFILES.get(agent_name) or (list(AGENT_PROFILES.values())[0] if AGENT_PROFILES else {})
+    agent_suffix  = agent_profile.get("system_suffix", "")
     active_tools  = get_tools_for_agent(agent_name)
 
     from datetime import datetime
     now_str = datetime.now().strftime("%A, %B %d, %Y %H:%M")
+    base_prompt   = (SYSTEM_PROMPT_BASE + "\n\n") if SYSTEM_PROMPT_BASE else ""
     datetime_line = f"Current date/time: {now_str}\n\n"
 
     if dirs:
@@ -844,9 +840,9 @@ def chat():
             except Exception:
                 hints.append(f"Folder: {d} (unreadable)")
         dir_info = "\n\n".join(hints)
-        system_msg = {"role": "system", "content": f"{datetime_line}You have access to {len(dirs)} project folder(s):\n\n{dir_info}\n\nAlways use tools relative to these directories. Never navigate above them.\n\n---\n{agent_suffix}"}
+        system_msg = {"role": "system", "content": f"{base_prompt}{datetime_line}You have access to {len(dirs)} project folder(s):\n\n{dir_info}\n\nAlways use tools relative to these directories. Never navigate above them.\n\n---\n{agent_suffix}"}
     else:
-        system_msg = {"role": "system", "content": f"{datetime_line}No working directory set. Ask user to select a project folder first.\n\n---\n{agent_suffix}"}
+        system_msg = {"role": "system", "content": f"{base_prompt}{datetime_line}No working directory set. Ask user to select a project folder first.\n\n---\n{agent_suffix}"}
 
     def generate():
         import time
@@ -1205,6 +1201,25 @@ def delete_chat():
         return jsonify({"status": "ok"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
+
+
+@app.route("/agents", methods=["GET"])
+def list_agents():
+    agents_list = [
+        {
+            "id":          agent_id,
+            "name":        profile.get("name", agent_id),
+            "description": profile.get("description", ""),
+        }
+        for agent_id, profile in AGENT_PROFILES.items()
+    ]
+    return jsonify({"agents": agents_list})
+
+
+@app.route("/reload_agents", methods=["POST"])
+def reload_agents_route():
+    reload_agents()
+    return jsonify({"status": "ok", "agents": list(AGENT_PROFILES.keys())})
 
 
 if __name__ == "__main__":

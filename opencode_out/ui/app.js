@@ -482,6 +482,48 @@ const agentBtn      = document.getElementById('agent-btn');
 const agentLabel    = document.getElementById('agent-label');
 const agentDropdown = document.getElementById('agent-dropdown');
 
+function bindAgentOptions() {
+    agentDropdown.querySelectorAll('.agent-option').forEach(btn => {
+        btn.onclick = (e) => {
+            e.stopPropagation();
+            selectedAgent = btn.dataset.agent;
+            agentLabel.textContent = selectedAgent;
+            agentDropdown.querySelectorAll('.agent-option').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            agentDropdown.classList.add('hidden');
+            agentBtn.classList.remove('open');
+            showStatusBanner('agent: ' + selectedAgent, 'info');
+        };
+    });
+}
+
+async function loadAgents() {
+    try {
+        const r = await fetch('/agents');
+        const d = await r.json();
+        const agents = d.agents || [];
+        const label  = agentDropdown.querySelector('.model-dropdown-label');
+        agentDropdown.innerHTML = '';
+        if (label) agentDropdown.appendChild(label);
+        agents.forEach((agent, i) => {
+            const btn = document.createElement('button');
+            btn.className = 'agent-option' + (i === 0 ? ' active' : '');
+            btn.dataset.agent = agent.id;
+            btn.innerHTML =
+                '<span class="agent-name">' + escHtml(agent.name) + '</span>' +
+                '<span class="agent-desc">' + escHtml(agent.description) + '</span>';
+            agentDropdown.appendChild(btn);
+        });
+        if (agents.length > 0) {
+            selectedAgent = agents[0].id;
+            agentLabel.textContent = agents[0].name;
+        }
+        bindAgentOptions();
+    } catch {
+        bindAgentOptions();
+    }
+}
+
 agentBtn.onclick = (e) => {
     e.stopPropagation();
     const isHidden = agentDropdown.classList.toggle('hidden');
@@ -489,18 +531,6 @@ agentBtn.onclick = (e) => {
     modelDropdown.classList.add('hidden');
     modelBtn.classList.remove('open');
 };
-agentDropdown.querySelectorAll('.agent-option').forEach(btn => {
-    btn.onclick = (e) => {
-        e.stopPropagation();
-        selectedAgent = btn.dataset.agent;
-        agentLabel.textContent = selectedAgent;
-        agentDropdown.querySelectorAll('.agent-option').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        agentDropdown.classList.add('hidden');
-        agentBtn.classList.remove('open');
-        showStatusBanner('Agent: ' + selectedAgent, 'info');
-    };
-});
 
 // ── Markdown / HTML helpers ───────────────────────────────────────────
 function escHtml(s) {
@@ -945,6 +975,7 @@ input.oninput = () => {
 async function init() {
     await getStorageDir();
     await loadChats();
+    await loadAgents();
 
     if (chats.length && activeChatId) {
         const chat = activeChat();
