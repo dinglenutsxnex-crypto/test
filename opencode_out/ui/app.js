@@ -753,7 +753,6 @@ function _toolInputSummary(name, args) {
 function _makeExpandPanel(inputText, outputText) {
     const panel = document.createElement('div');
     panel.className = 'tool-expand-panel';
-    panel.style.display = 'none';
     let html = '<div class="tool-expand-section">'
              + '<div class="tool-expand-label">input</div>'
              + '<pre class="tool-expand-pre">' + escHtml(inputText) + '</pre>'

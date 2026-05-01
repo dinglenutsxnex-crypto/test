@@ -552,6 +552,7 @@ def _android_webview_fetch(url):
 
 
 def websearch(query, num_results=8):
+    import urllib.parse
     from html.parser import HTMLParser
 
     class DDGParser(HTMLParser):
@@ -560,12 +561,18 @@ def websearch(query, num_results=8):
             self.results = []
             self._cur = None
             self._capture = None
+            self._depth = 0
+            self._result_depth = None
 
         def handle_starttag(self, tag, attrs):
             attrs = dict(attrs)
             cls = attrs.get('class', '')
-            if tag == 'div' and 'result' in cls and 'result__body' in cls:
-                self._cur = {'title': '', 'url': '', 'snippet': ''}
+            if tag == 'div':
+                self._depth += 1
+                if 'result__body' in cls:
+                    self._cur = {'title': '', 'url': '', 'snippet': ''}
+                    self._result_depth = self._depth
+                    return
             if self._cur is None:
                 return
             if tag == 'a' and 'result__a' in cls:
@@ -576,29 +583,27 @@ def websearch(query, num_results=8):
                 self._capture = 'snippet'
 
         def handle_endtag(self, tag):
-            if self._capture and tag in ('a', 'span'):
+            if tag in ('a', 'span'):
                 self._capture = None
-            if tag == 'div' and self._cur and self._cur.get('title'):
-                self.results.append(self._cur)
-                self._cur = None
+            if tag == 'div':
+                if self._cur and self._result_depth == self._depth:
+                    if self._cur.get('title'):
+                        self.results.append(self._cur)
+                    self._cur = None
+                    self._result_depth = None
+                    self._capture = None
+                self._depth -= 1
 
         def handle_data(self, data):
             if self._capture and self._cur is not None:
                 self._cur[self._capture] += data
 
-    try:
-        resp = requests.get(
-            "https://html.duckduckgo.com/html/",
-            params={"q": query},
-            headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
-            timeout=30
-        )
-        resp.raise_for_status()
+    def _parse_and_format(html_text):
         parser = DDGParser()
-        parser.feed(resp.text)
+        parser.feed(html_text)
         results = parser.results[:num_results]
         if not results:
-            return f"No results found for: {query}"
+            return None
         lines = [f"Search results for: **{query}**\n"]
         for i, r in enumerate(results, 1):
             lines.append(f"{i}. **{r['title'].strip()}**")
@@ -610,8 +615,29 @@ def websearch(query, num_results=8):
                 lines.append(f"   {snippet}")
             lines.append("")
         return "\n".join(lines)
-    except Exception as e:
-        return f"Search error: {e}"
+
+    encoded = urllib.parse.quote(query)
+    html = _android_webview_fetch(f"https://html.duckduckgo.com/html/?q={encoded}")
+    if html:
+        result = _parse_and_format(html)
+        if result:
+            return result
+
+    try:
+        resp = requests.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+            headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+            timeout=30
+        )
+        if resp.status_code == 200:
+            result = _parse_and_format(resp.text)
+            if result:
+                return result
+    except Exception:
+        pass
+
+    return f"No results found for: {query}"
 
 
 def webfetch(url):
