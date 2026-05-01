@@ -141,9 +141,68 @@ def is_within_dir(path, dir_path):
 # ── Prompts root ───────────────────────────────────────────────────────
 # Lives inside the user-accessible opencode dir (e.g. /sdcard/opencode/prompts/)
 # so the user can edit system.md and agent .md files directly.
+# Goes 3 levels up from app.py: python/ -> opencode_out/ -> project_root/
 _BUNDLED_PROMPTS = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "prompts")
+
+# ── Hardcoded defaults (used when bundled prompts are missing) ──────────
+_DEFAULT_SYSTEM_MD = """You are a coding assistant running on a mobile Android app called OpenCode.
+
+Be direct and concise. No unnecessary preamble, no enthusiasm theater, no filler phrases.
+For simple questions, answer in 1-2 sentences. Only elaborate when the task genuinely requires it.
+Never start responses with affirmations like "Sure!", "Great!", "Of course!", "Absolutely!" etc."""
+
+_DEFAULT_INDEX_JSON = [
+    {"id": "build",   "name": "build",   "description": "Full access — code, write, run commands",     "file": "build.md",   "no_tools": False, "denied_tools": []},
+    {"id": "plan",    "name": "plan",    "description": "Read-only analysis — no file writes",          "file": "plan.md",    "no_tools": False, "denied_tools": ["write", "edit", "shell"]},
+    {"id": "explore", "name": "explore", "description": "Search & read only — fast codebase nav",       "file": "explore.md", "no_tools": False, "denied_tools": ["write", "edit", "shell", "web_search", "web_fetch"]},
+    {"id": "ask",     "name": "ask",     "description": "No tools — pure Q&A, no file access",          "file": "ask.md",     "no_tools": True,  "denied_tools": []},
+]
+
+_DEFAULT_AGENT_MDS = {
+    "build.md": """You are in BUILD mode — full read/write/execute access.
+
+You can read files, write files, edit files, run shell commands, search the web, and explore GitHub repos.
+
+Rules:
+- Fix bugs, write code, and complete tasks end-to-end without asking for permission mid-task.
+- Prefer surgical edits over full file rewrites.
+- NEVER revert changes you didn't make.
+- If a task is ambiguous, make a reasonable assumption, state it briefly, and proceed.
+- When coding, show only relevant diffs or final code — not the entire file unless asked.""",
+
+    "plan.md": """You are in PLAN mode — read-only analysis, no writes or shell execution.
+
+You MAY use: read, glob, grep, web_search, web_fetch, github_walk.
+You MUST NOT use: write, edit, shell.
+
+Rules:
+- Analyze the codebase and produce a clear, numbered action plan.
+- State exactly which files need changing and why.
+- Do not execute the plan — describe it precisely so it can be handed to build mode.
+- Be concise. No padding.""",
+
+    "explore.md": """You are in EXPLORE mode — fast read-only codebase navigation.
+
+You MAY use: read, glob, grep, github_walk.
+You MUST NOT use: web_search, web_fetch, write, edit, shell.
+
+Rules:
+- Answer structural questions about the codebase quickly.
+- Always return exact file paths and line numbers when relevant.
+- Do not summarize unnecessarily — show the actual code or path.
+- If something isn't found, say so immediately rather than guessing.""",
+
+    "ask.md": """You are in ASK mode — pure question answering, no tools, no file access.
+
+Rules:
+- Answer entirely from your own knowledge.
+- Never attempt to use any tools.
+- If a question requires inspecting code or files, tell the user to switch to build or explore mode.
+- Keep answers tight. No filler.""",
+}
+
 
 def get_prompts_dir() -> str:
     base = get_opencode_dir()
@@ -152,24 +211,62 @@ def get_prompts_dir() -> str:
     _seed_prompts(d)
     return d
 
+
 def _seed_prompts(dest: str):
-    """Copy bundled prompt files to user dir if they don't exist yet."""
+    """Copy bundled prompt files to user dir if they don't exist yet.
+    Falls back to hardcoded defaults if the bundled prompts dir is missing."""
+    import shutil
+
     src = _BUNDLED_PROMPTS
-    if not os.path.isdir(src):
-        return
-    for root, dirs, files in os.walk(src):
-        rel = os.path.relpath(root, src)
-        target_dir = os.path.join(dest, rel) if rel != "." else dest
-        os.makedirs(target_dir, exist_ok=True)
-        for fname in files:
-            dst_file = os.path.join(target_dir, fname)
-            src_file = os.path.join(root, fname)
-            if not os.path.isfile(dst_file):
-                try:
-                    import shutil
-                    shutil.copy2(src_file, dst_file)
-                except Exception:
-                    pass
+    if os.path.isdir(src):
+        # Copy from bundled prompts (normal case when APK packages them)
+        for root, dirs, files in os.walk(src):
+            rel = os.path.relpath(root, src)
+            target_dir = os.path.join(dest, rel) if rel != "." else dest
+            os.makedirs(target_dir, exist_ok=True)
+            for fname in files:
+                dst_file = os.path.join(target_dir, fname)
+                src_file = os.path.join(root, fname)
+                if not os.path.isfile(dst_file):
+                    try:
+                        shutil.copy2(src_file, dst_file)
+                    except Exception:
+                        pass
+    else:
+        # Bundled prompts not found — auto-generate defaults
+        _autogenerate_prompts(dest)
+
+
+def _autogenerate_prompts(dest: str):
+    """Write hardcoded default prompts to the user prompts dir."""
+    agents_dir = os.path.join(dest, "agents")
+    os.makedirs(agents_dir, exist_ok=True)
+
+    system_path = os.path.join(dest, "system.md")
+    if not os.path.isfile(system_path):
+        try:
+            with open(system_path, "w", encoding="utf-8") as f:
+                f.write(_DEFAULT_SYSTEM_MD.strip())
+        except Exception:
+            pass
+
+    index_path = os.path.join(agents_dir, "index.json")
+    if not os.path.isfile(index_path):
+        try:
+            with open(index_path, "w", encoding="utf-8") as f:
+                json.dump(_DEFAULT_INDEX_JSON, f, indent=2)
+        except Exception:
+            pass
+
+    for fname, content in _DEFAULT_AGENT_MDS.items():
+        fpath = os.path.join(agents_dir, fname)
+        if not os.path.isfile(fpath):
+            try:
+                with open(fpath, "w", encoding="utf-8") as f:
+                    f.write(content.strip())
+            except Exception:
+                pass
+
 
 def _load_system_prompt() -> str:
     path = os.path.join(get_prompts_dir(), "system.md")
@@ -177,7 +274,8 @@ def _load_system_prompt() -> str:
         with open(path, "r", encoding="utf-8") as f:
             return f.read().strip()
     except Exception:
-        return ""
+        return _DEFAULT_SYSTEM_MD.strip()
+
 
 def _load_agents() -> dict:
     agents_dir = os.path.join(get_prompts_dir(), "agents")
@@ -187,6 +285,10 @@ def _load_agents() -> dict:
             entries = json.load(f)
     except Exception:
         entries = []
+
+    # If still empty after seeding, fall back to hardcoded defaults
+    if not entries:
+        entries = _DEFAULT_INDEX_JSON
 
     profiles = {}
     for entry in entries:
@@ -198,7 +300,9 @@ def _load_agents() -> dict:
             with open(md_file, "r", encoding="utf-8") as f:
                 system_suffix = f.read().strip()
         except Exception:
-            system_suffix = f"You are in {agent_id.upper()} mode."
+            # File missing — use hardcoded default for this agent
+            fname = entry.get("file", f"{agent_id}.md")
+            system_suffix = _DEFAULT_AGENT_MDS.get(fname, f"You are in {agent_id.upper()} mode.")
 
         profiles[agent_id] = {
             "name":          entry.get("name", agent_id),

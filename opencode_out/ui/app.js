@@ -502,11 +502,21 @@ async function loadAgents() {
         const r = await fetch('/agents');
         const d = await r.json();
         const agents = d.agents || [];
-        if (!agents.length) return;
 
         const labelEl = agentDropdown.querySelector('.model-dropdown-label');
         const labelText = labelEl ? labelEl.textContent : 'Agent Mode';
         agentDropdown.innerHTML = '<div class="model-dropdown-label">' + escHtml(labelText) + '</div>';
+
+        if (!agents.length) {
+            // Profiles not loaded yet — show a reload option
+            const btn = document.createElement('button');
+            btn.className = 'agent-option';
+            btn.innerHTML = '<span class="agent-name">No profiles</span><span class="agent-desc">Tap to reload</span>';
+            btn.onclick = () => { agentDropdown.classList.add('hidden'); loadAgents(); };
+            agentDropdown.appendChild(btn);
+            bindAgentOptions();
+            return;
+        }
 
         agents.forEach((agent, i) => {
             const btn = document.createElement('button');
