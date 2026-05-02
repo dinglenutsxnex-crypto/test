@@ -4,7 +4,6 @@ import re
 import glob as glob_module
 import fnmatch
 import requests
-from importlib import resources
 from flask import Flask, send_file, request, jsonify, send_from_directory, Response, stream_with_context
 from python.config import API_URL, MODEL, HOST, PORT, WORKING_DIR, MAX_TOKENS, COMPACTION_THRESHOLD
 from python.compaction import (
@@ -139,47 +138,47 @@ def is_within_dir(path, dir_path):
     abs_dir = os.path.abspath(dir_path)
     return abs_path.startswith(abs_dir + os.sep) or abs_path == abs_dir
 
-_PROMPTS_PACKAGE = "python.prompts"
+# ── Prompts root ───────────────────────────────────────────────────────
+# Lives inside the user-accessible opencode dir (e.g. /sdcard/opencode/prompts/)
+# Prompts live inside opencode_out/prompts/ — always accessible via Chaquopy.
+# Goes 2 levels up from app.py: python/ -> opencode_out/
+_BUNDLED_PROMPTS = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "prompts")
+
+# ── Minimal fallback (only used if prompts folder is somehow missing) ───
+_DEFAULT_SYSTEM_MD = """You are a coding assistant running on a mobile Android app called OpenCode.
+
+Be direct and concise. No unnecessary preamble, no enthusiasm theater, no filler phrases.
+For simple questions, answer in 1-2 sentences. Only elaborate when the task genuinely requires it.
+Never start responses with affirmations like "Sure!", "Great!", "Of course!", "Absolutely!" etc."""
+
+_DEFAULT_INDEX_JSON = [
+    {"id": "build", "name": "build", "description": "Full access — code, write, run commands", "file": "build.md", "no_tools": False, "denied_tools": []},
+]
+
 
 def get_prompts_dir() -> str:
-    base = get_opencode_dir()
-    d    = os.path.join(base, "prompts")
-    os.makedirs(os.path.join(d, "agents"), exist_ok=True)
-    _seed_prompts(d)
-    return d
-
-
-def _copy_prompt_resource(src, dest: str):
-    if src.name == "__pycache__" or src.name.endswith(".py"):
-        return
-    if src.is_dir():
-        os.makedirs(dest, exist_ok=True)
-        for child in src.iterdir():
-            _copy_prompt_resource(child, os.path.join(dest, child.name))
-        return
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    with src.open("rb") as rf, open(dest, "wb") as wf:
-        wf.write(rf.read())
-
-
-def _seed_prompts(dest: str):
-    try:
-        _copy_prompt_resource(resources.files(_PROMPTS_PACKAGE), dest)
-    except Exception as e:
-        raise RuntimeError(f"Bundled prompts missing from package '{_PROMPTS_PACKAGE}': {e}")
+    return _BUNDLED_PROMPTS
 
 
 def _load_system_prompt() -> str:
     path = os.path.join(get_prompts_dir(), "system.md")
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read().strip()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return _DEFAULT_SYSTEM_MD.strip()
 
 
 def _load_agents() -> dict:
     agents_dir = os.path.join(get_prompts_dir(), "agents")
     index_path = os.path.join(agents_dir, "index.json")
-    with open(index_path, "r", encoding="utf-8") as f:
-        entries = json.load(f)
+    try:
+        with open(index_path, "r", encoding="utf-8") as f:
+            entries = json.load(f)
+    except Exception:
+        entries = _DEFAULT_INDEX_JSON
 
     profiles = {}
     for entry in entries:
@@ -187,8 +186,11 @@ def _load_agents() -> dict:
         if not agent_id:
             continue
         md_file = os.path.join(agents_dir, entry.get("file", f"{agent_id}.md"))
-        with open(md_file, "r", encoding="utf-8") as f:
-            system_suffix = f.read().strip()
+        try:
+            with open(md_file, "r", encoding="utf-8") as f:
+                system_suffix = f.read().strip()
+        except Exception:
+            system_suffix = f"You are in {agent_id.upper()} mode."
 
         profiles[agent_id] = {
             "name":          entry.get("name", agent_id),
@@ -196,7 +198,6 @@ def _load_agents() -> dict:
             "system_suffix": system_suffix,
             "no_tools":      entry.get("no_tools", False),
             "denied_tools":  entry.get("denied_tools", []),
-            "can_spawn":     entry.get("can_spawn", False),
         }
 
     return profiles
@@ -209,45 +210,50 @@ def reload_agents():
     SYSTEM_PROMPT_BASE = _load_system_prompt()
     AGENT_PROFILES     = _load_agents()
 
-def _spawn_agent_tool() -> dict:
-    agent_lines = [
-        f"- {agent_id}: {profile.get('description', '')}".rstrip()
-        for agent_id, profile in AGENT_PROFILES.items()
-    ]
-    return {
-        "type": "function",
-        "function": {
-            "name": "spawn_agent",
-            "description": (
-                "Delegate a self-contained task to a specialized subagent. "
-                "The subagent runs to completion and returns its full output.\n\n"
-                "Agents:\n" + "\n".join(agent_lines)
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "agent_id": {
-                        "type": "string",
-                        "enum": list(AGENT_PROFILES.keys()),
-                        "description": "Which agent profile to run"
-                    },
-                    "task": {
-                        "type": "string",
-                        "description": (
-                            "The complete task description. Be specific; the subagent has no "
-                            "context from the main conversation. Include file paths, exact "
-                            "requirements, and expected output format."
-                        )
-                    },
-                    "context": {
-                        "type": "string",
-                        "description": "Optional extra context to prepend to the task."
-                    }
+SPAWN_AGENT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "spawn_agent",
+        "description": (
+            "Delegate a self-contained task to a specialized subagent. "
+            "The subagent runs to completion and returns its full output. "
+            "Use this to parallelize work, delegate read-only analysis before writing, "
+            "or break large tasks into focused subtasks.\n\n"
+            "Agents:\n"
+            "- build: full read/write/execute — use for actual code changes\n"
+            "- plan: read-only analysis — use to map out changes before build does them\n"
+            "- explore: read-only, no web — use for fast structural questions about the codebase\n"
+            "- ask: no tools at all — use for pure reasoning, summarization, or drafting"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string",
+                    "enum": ["build", "build-supercharged", "plan", "explore", "ask"],
+                    "description": "Which agent profile to run"
                 },
-                "required": ["agent_id", "task"]
-            }
+                "task": {
+                    "type": "string",
+                    "description": (
+                        "The complete task description. Be specific — the subagent has no "
+                        "context from the main conversation. Include file paths, exact "
+                        "requirements, and expected output format."
+                    )
+                },
+                "context": {
+                    "type": "string",
+                    "description": (
+                        "Optional extra context to prepend to the task — e.g. paste in a "
+                        "relevant file snippet, an error message, or a prior subagent's "
+                        "output that this agent needs."
+                    )
+                }
+            },
+            "required": ["agent_id", "task"]
         }
     }
+}
 
 def get_tools_for_agent(agent_name: str) -> list:
     fallback = list(AGENT_PROFILES.values())[0] if AGENT_PROFILES else {}
@@ -256,8 +262,9 @@ def get_tools_for_agent(agent_name: str) -> list:
         return []
     denied = profile.get("denied_tools", [])
     tools = [t for t in TOOLS if t["function"]["name"] not in denied]
-    if profile.get("can_spawn", False) and "spawn_agent" not in denied:
-        tools.append(_spawn_agent_tool())
+    # Only give spawn_agent to agents that can delegate (build and plan)
+    if agent_name in ("build", "build-supercharged", "plan") and "spawn_agent" not in denied:
+        tools.append(SPAWN_AGENT_TOOL)
     return tools
 
 TOOLS = [
@@ -1675,4 +1682,3 @@ def reload_agents_route():
 if __name__ == "__main__":
     print(f"OpenCode -- http://localhost:{PORT}")
     app.run(host=HOST, port=PORT, debug=True, threaded=True)
-
