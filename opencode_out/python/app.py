@@ -19,9 +19,7 @@ from python.compaction import (
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 app = Flask(__name__, template_folder=ROOT, static_folder=ROOT + '/ui')
 
-# ── Per-chat state (replaces single global `history`) ─────────────────
-# Each chat_id gets its own history list and compaction summary.
-# This allows multiple chats to stream concurrently without clobbering.
+
 chat_histories  = {}   # chat_id -> list of rich turn objects (see turn schema below)
 chat_summaries  = {}   # chat_id -> previous compaction summary string
 chat_msg_counts = {}   # chat_id -> sequence counter for turn ID generation
@@ -1797,7 +1795,13 @@ def chat():
                 history.append(t)
 
             if len(history) > 40:
-                chat_histories[chat_id] = history[-40:]
+                trimmed = history[-40:]
+                # Never start on an orphaned tool result — find the first assistant/user turn
+                for i, turn in enumerate(trimmed):
+                    if turn.get("role") in ("user", "assistant"):
+                        trimmed = trimmed[i:]
+                        break
+                chat_histories[chat_id] = trimmed
             else:
                 chat_histories[chat_id] = history
 
