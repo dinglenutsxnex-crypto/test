@@ -46,7 +46,6 @@ jobs:
           find /tmp/pypackages -name "*.egg-info" -type d -exec rm -rf {} + 2>/dev/null || true
 
           cp -r opencode_out /tmp/pypackages/
-          cp -r prompts /tmp/pypackages/
           cd /tmp/pypackages && zip -r /tmp/pyapp.zip . -x "*.pyc"
 
           mkdir -p android/app/src/main/assets
