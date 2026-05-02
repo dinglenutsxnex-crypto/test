@@ -4,6 +4,7 @@ import re
 import glob as glob_module
 import fnmatch
 import requests
+from importlib import resources
 from flask import Flask, send_file, request, jsonify, send_from_directory, Response, stream_with_context
 from python.config import API_URL, MODEL, HOST, PORT, WORKING_DIR, MAX_TOKENS, COMPACTION_THRESHOLD
 from python.compaction import (
@@ -138,134 +139,7 @@ def is_within_dir(path, dir_path):
     abs_dir = os.path.abspath(dir_path)
     return abs_path.startswith(abs_dir + os.sep) or abs_path == abs_dir
 
-# ── Prompts root ───────────────────────────────────────────────────────
-# Lives inside the user-accessible opencode dir (e.g. /sdcard/opencode/prompts/)
-# so the user can edit system.md and agent .md files directly.
-# Goes 3 levels up from app.py: python/ -> opencode_out/ -> project_root/
-_BUNDLED_PROMPTS = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "prompts")
-
-# ── Hardcoded defaults (used when bundled prompts are missing) ──────────
-_DEFAULT_SYSTEM_MD = """You are a coding assistant running on a mobile Android app called OpenCode.
-
-Be direct and concise. No unnecessary preamble, no enthusiasm theater, no filler phrases.
-For simple questions, answer in 1-2 sentences. Only elaborate when the task genuinely requires it.
-Never start responses with affirmations like "Sure!", "Great!", "Of course!", "Absolutely!" etc."""
-
-_DEFAULT_INDEX_JSON = [
-    {"id": "build",             "name": "build",             "description": "Full access — code, write, run commands",             "file": "build.md",             "no_tools": False, "denied_tools": []},
-    {"id": "build-supercharged","name": "build-supercharged","description": "Parallel multi-agent orchestrator — spawns specialists",  "file": "build-supercharged.md","no_tools": False, "denied_tools": []},
-    {"id": "plan",              "name": "plan",              "description": "Read-only analysis — no file writes",                   "file": "plan.md",              "no_tools": False, "denied_tools": ["write", "edit", "shell"]},
-    {"id": "explore",           "name": "explore",           "description": "Search & read only — fast codebase nav",                "file": "explore.md",           "no_tools": False, "denied_tools": ["write", "edit", "shell", "web_search", "web_fetch"]},
-    {"id": "ask",               "name": "ask",               "description": "No tools — pure Q&A, no file access",                  "file": "ask.md",               "no_tools": True,  "denied_tools": []},
-]
-
-_DEFAULT_AGENT_MDS = {
-    "build-supercharged.md": """You are in BUILD-SUPERCHARGED mode — a parallel multi-agent orchestrator.
-
-Your job is to decompose large tasks and dispatch isolated work to specialist subagents simultaneously using spawn_agent. You have full tool access yourself, but your primary power is parallel delegation.
-
-## When to use subagents
-
-Spawn subagents when the task has naturally independent pieces that do NOT touch the same files:
-- UI work and server logic that don't share a file
-- Multiple independent features or bug fixes
-- A scout agent fetching context while another plans
-- One agent per major module or service
-
-Do NOT spawn subagents for:
-- Tasks that are a single linear sequence (just do it yourself)
-- When work in agent A depends on the output of agent B before it can start (chain them, don't parallelize)
-- More than 5 agents at once
-
-## Collision prevention — CRITICAL
-
-Before spawning, mentally partition the file ownership:
-- Each subagent must have exclusive ownership of its files. Zero overlap.
-- If two pieces of work touch the same file, they are NOT independent. Serialize them or merge into one agent.
-- State the file ownership partition in your plan before spawning.
-
-Example safe partition:
-  Agent 1 owns: src/ui/*, src/components/*
-  Agent 2 owns: src/server/*, src/api/*
-  Agent 3 owns: tests/*, README.md
-
-Example UNSAFE: both agents edit `src/config.ts` — this will corrupt the file.
-
-## How to orchestrate
-
-1. Read enough of the codebase yourself to understand the structure (use glob, grep, read).
-2. Write a 3-line partition plan: which agent owns which files/dirs.
-3. Issue all independent spawn_agent calls IN THE SAME RESPONSE so they run in parallel.
-4. Each subagent task must be fully self-contained: include file paths, exact requirements, and any shared context they need — they have zero memory of this conversation.
-5. After all agents complete, review their outputs and do any integration work yourself (e.g. updating a shared index or config that only one agent should touch).
-
-## Subagent prompting rules
-
-- Be explicit about file paths. "Edit the auth handler" is useless. "Edit src/server/auth.py, function handle_login()" is correct.
-- Tell each agent exactly what output to return (e.g. "Return the final content of the file" or "Return a summary of changes made").
-- Pass relevant context in the context field — error messages, related snippets, prior agent output — rather than making the agent re-read things.
-- Use `build` for agents that write code, `explore` for agents that only need to read/search, `plan` for agents that need to produce a plan without writing.
-
-## Parallel call syntax
-
-Issue multiple spawn_agent calls in one response. They will execute concurrently:
-
-  spawn_agent(agent_id="build", task="Implement POST /api/users in src/server/routes/users.py. Create the route handler, validate input, write to DB. Return final file content.", context="Schema: {id, name, email}")
-  spawn_agent(agent_id="build", task="Add the Users page component to src/ui/pages/Users.jsx. Include a form for name+email, POST to /api/users on submit. Return final file content.", context="API endpoint: POST /api/users, body: {name, email}")
-
-These run at the same time. You will be blocked until both finish, then you can integrate.
-
-## What NOT to do
-
-- Do not spawn one agent then wait for it before spawning the next if they are independent
-- Do not give two agents overlapping file ownership
-- Do not spawn agents for trivial one-liner tasks — just do it yourself
-- Do not cascade more than 2 levels deep (subagents cannot spawn further subagents)""",
-
-    "build.md": """You are in BUILD mode — full read/write/execute access.
-
-You can read files, write files, edit files, run shell commands, search the web, and explore GitHub repos.
-
-Rules:
-- Fix bugs, write code, and complete tasks end-to-end without asking for permission mid-task.
-- Prefer surgical edits over full file rewrites.
-- NEVER revert changes you didn't make.
-- If a task is ambiguous, make a reasonable assumption, state it briefly, and proceed.
-- When coding, show only relevant diffs or final code — not the entire file unless asked.""",
-
-    "plan.md": """You are in PLAN mode — read-only analysis, no writes or shell execution.
-
-You MAY use: read, glob, grep, web_search, web_fetch, github_walk.
-You MUST NOT use: write, edit, shell.
-
-Rules:
-- Analyze the codebase and produce a clear, numbered action plan.
-- State exactly which files need changing and why.
-- Do not execute the plan — describe it precisely so it can be handed to build mode.
-- Be concise. No padding.""",
-
-    "explore.md": """You are in EXPLORE mode — fast read-only codebase navigation.
-
-You MAY use: read, glob, grep, github_walk.
-You MUST NOT use: web_search, web_fetch, write, edit, shell.
-
-Rules:
-- Answer structural questions about the codebase quickly.
-- Always return exact file paths and line numbers when relevant.
-- Do not summarize unnecessarily — show the actual code or path.
-- If something isn't found, say so immediately rather than guessing.""",
-
-    "ask.md": """You are in ASK mode — pure question answering, no tools, no file access.
-
-Rules:
-- Answer entirely from your own knowledge.
-- Never attempt to use any tools.
-- If a question requires inspecting code or files, tell the user to switch to build or explore mode.
-- Keep answers tight. No filler.""",
-}
-
+_PROMPTS_PACKAGE = "python.prompts"
 
 def get_prompts_dir() -> str:
     base = get_opencode_dir()
@@ -275,90 +149,37 @@ def get_prompts_dir() -> str:
     return d
 
 
+def _copy_prompt_resource(src, dest: str):
+    if src.name == "__pycache__" or src.name.endswith(".py"):
+        return
+    if src.is_dir():
+        os.makedirs(dest, exist_ok=True)
+        for child in src.iterdir():
+            _copy_prompt_resource(child, os.path.join(dest, child.name))
+        return
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with src.open("rb") as rf, open(dest, "wb") as wf:
+        wf.write(rf.read())
+
+
 def _seed_prompts(dest: str):
-    """Copy bundled prompt files to user dir if they don't exist yet.
-    Falls back to hardcoded defaults if the bundled prompts dir is missing."""
-    import shutil
-
-    src = _BUNDLED_PROMPTS
-    if os.path.isdir(src):
-        # Copy from bundled prompts (normal case when APK packages them)
-        for root, dirs, files in os.walk(src):
-            rel = os.path.relpath(root, src)
-            target_dir = os.path.join(dest, rel) if rel != "." else dest
-            os.makedirs(target_dir, exist_ok=True)
-            for fname in files:
-                dst_file = os.path.join(target_dir, fname)
-                src_file = os.path.join(root, fname)
-                if not os.path.isfile(dst_file):
-                    try:
-                        shutil.copy2(src_file, dst_file)
-                    except Exception:
-                        pass
-    else:
-        # Bundled prompts not found — auto-generate defaults
-        _autogenerate_prompts(dest)
-
-
-def _autogenerate_prompts(dest: str):
-    """Write hardcoded default prompts to the user prompts dir."""
-    agents_dir = os.path.join(dest, "agents")
-    os.makedirs(agents_dir, exist_ok=True)
-
-    system_path = os.path.join(dest, "system.md")
-    if not os.path.isfile(system_path):
-        try:
-            with open(system_path, "w", encoding="utf-8") as f:
-                f.write(_DEFAULT_SYSTEM_MD.strip())
-        except Exception:
-            pass
-
-    index_path = os.path.join(agents_dir, "index.json")
-    if not os.path.isfile(index_path):
-        try:
-            with open(index_path, "w", encoding="utf-8") as f:
-                json.dump(_DEFAULT_INDEX_JSON, f, indent=2)
-        except Exception:
-            pass
-
-    for fname, content in _DEFAULT_AGENT_MDS.items():
-        fpath = os.path.join(agents_dir, fname)
-        if not os.path.isfile(fpath):
-            try:
-                with open(fpath, "w", encoding="utf-8") as f:
-                    f.write(content.strip())
-            except Exception:
-                pass
+    try:
+        _copy_prompt_resource(resources.files(_PROMPTS_PACKAGE), dest)
+    except Exception as e:
+        raise RuntimeError(f"Bundled prompts missing from package '{_PROMPTS_PACKAGE}': {e}")
 
 
 def _load_system_prompt() -> str:
     path = os.path.join(get_prompts_dir(), "system.md")
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read().strip()
-    except Exception:
-        return _DEFAULT_SYSTEM_MD.strip()
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read().strip()
 
 
 def _load_agents() -> dict:
     agents_dir = os.path.join(get_prompts_dir(), "agents")
     index_path = os.path.join(agents_dir, "index.json")
-    try:
-        with open(index_path, "r", encoding="utf-8") as f:
-            entries = json.load(f)
-    except Exception:
-        entries = []
-
-    # If still empty after seeding, fall back to hardcoded defaults
-    if not entries:
-        entries = _DEFAULT_INDEX_JSON
-
-    # Inject built-in agents that may be missing from older on-disk index.json
-    _BUILTIN_INJECT = {e["id"]: e for e in _DEFAULT_INDEX_JSON}
-    existing_ids = {e.get("id") for e in entries}
-    for bid, bentry in _BUILTIN_INJECT.items():
-        if bid not in existing_ids:
-            entries.append(bentry)
+    with open(index_path, "r", encoding="utf-8") as f:
+        entries = json.load(f)
 
     profiles = {}
     for entry in entries:
@@ -366,13 +187,8 @@ def _load_agents() -> dict:
         if not agent_id:
             continue
         md_file = os.path.join(agents_dir, entry.get("file", f"{agent_id}.md"))
-        try:
-            with open(md_file, "r", encoding="utf-8") as f:
-                system_suffix = f.read().strip()
-        except Exception:
-            # File missing — use hardcoded default for this agent
-            fname = entry.get("file", f"{agent_id}.md")
-            system_suffix = _DEFAULT_AGENT_MDS.get(fname, f"You are in {agent_id.upper()} mode.")
+        with open(md_file, "r", encoding="utf-8") as f:
+            system_suffix = f.read().strip()
 
         profiles[agent_id] = {
             "name":          entry.get("name", agent_id),
@@ -380,6 +196,7 @@ def _load_agents() -> dict:
             "system_suffix": system_suffix,
             "no_tools":      entry.get("no_tools", False),
             "denied_tools":  entry.get("denied_tools", []),
+            "can_spawn":     entry.get("can_spawn", False),
         }
 
     return profiles
@@ -392,50 +209,45 @@ def reload_agents():
     SYSTEM_PROMPT_BASE = _load_system_prompt()
     AGENT_PROFILES     = _load_agents()
 
-SPAWN_AGENT_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "spawn_agent",
-        "description": (
-            "Delegate a self-contained task to a specialized subagent. "
-            "The subagent runs to completion and returns its full output. "
-            "Use this to parallelize work, delegate read-only analysis before writing, "
-            "or break large tasks into focused subtasks.\n\n"
-            "Agents:\n"
-            "- build: full read/write/execute — use for actual code changes\n"
-            "- plan: read-only analysis — use to map out changes before build does them\n"
-            "- explore: read-only, no web — use for fast structural questions about the codebase\n"
-            "- ask: no tools at all — use for pure reasoning, summarization, or drafting"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "agent_id": {
-                    "type": "string",
-                    "enum": ["build", "build-supercharged", "plan", "explore", "ask"],
-                    "description": "Which agent profile to run"
+def _spawn_agent_tool() -> dict:
+    agent_lines = [
+        f"- {agent_id}: {profile.get('description', '')}".rstrip()
+        for agent_id, profile in AGENT_PROFILES.items()
+    ]
+    return {
+        "type": "function",
+        "function": {
+            "name": "spawn_agent",
+            "description": (
+                "Delegate a self-contained task to a specialized subagent. "
+                "The subagent runs to completion and returns its full output.\n\n"
+                "Agents:\n" + "\n".join(agent_lines)
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "enum": list(AGENT_PROFILES.keys()),
+                        "description": "Which agent profile to run"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": (
+                            "The complete task description. Be specific; the subagent has no "
+                            "context from the main conversation. Include file paths, exact "
+                            "requirements, and expected output format."
+                        )
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Optional extra context to prepend to the task."
+                    }
                 },
-                "task": {
-                    "type": "string",
-                    "description": (
-                        "The complete task description. Be specific — the subagent has no "
-                        "context from the main conversation. Include file paths, exact "
-                        "requirements, and expected output format."
-                    )
-                },
-                "context": {
-                    "type": "string",
-                    "description": (
-                        "Optional extra context to prepend to the task — e.g. paste in a "
-                        "relevant file snippet, an error message, or a prior subagent's "
-                        "output that this agent needs."
-                    )
-                }
-            },
-            "required": ["agent_id", "task"]
+                "required": ["agent_id", "task"]
+            }
         }
     }
-}
 
 def get_tools_for_agent(agent_name: str) -> list:
     fallback = list(AGENT_PROFILES.values())[0] if AGENT_PROFILES else {}
@@ -444,9 +256,8 @@ def get_tools_for_agent(agent_name: str) -> list:
         return []
     denied = profile.get("denied_tools", [])
     tools = [t for t in TOOLS if t["function"]["name"] not in denied]
-    # Only give spawn_agent to agents that can delegate (build and plan)
-    if agent_name in ("build", "build-supercharged", "plan") and "spawn_agent" not in denied:
-        tools.append(SPAWN_AGENT_TOOL)
+    if profile.get("can_spawn", False) and "spawn_agent" not in denied:
+        tools.append(_spawn_agent_tool())
     return tools
 
 TOOLS = [
@@ -1864,3 +1675,4 @@ def reload_agents_route():
 if __name__ == "__main__":
     print(f"OpenCode -- http://localhost:{PORT}")
     app.run(host=HOST, port=PORT, debug=True, threaded=True)
+

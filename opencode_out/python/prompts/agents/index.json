@@ -1,0 +1,38 @@
+[
+  {
+    "id": "build",
+    "name": "build",
+    "description": "Full access — code, write, run commands",
+    "file": "build.md",
+    "no_tools": false,
+    "denied_tools": [],
+    "can_spawn": true
+  },
+  {
+    "id": "plan",
+    "name": "plan",
+    "description": "Read-only analysis — no file writes",
+    "file": "plan.md",
+    "no_tools": false,
+    "denied_tools": ["write", "edit", "shell"],
+    "can_spawn": true
+  },
+  {
+    "id": "explore",
+    "name": "explore",
+    "description": "Search & read only — fast codebase nav",
+    "file": "explore.md",
+    "no_tools": false,
+    "denied_tools": ["write", "edit", "shell", "web_search", "web_fetch"],
+    "can_spawn": false
+  },
+  {
+    "id": "ask",
+    "name": "ask",
+    "description": "No tools — pure Q&A, no file access",
+    "file": "ask.md",
+    "no_tools": true,
+    "denied_tools": [],
+    "can_spawn": false
+  }
+]
