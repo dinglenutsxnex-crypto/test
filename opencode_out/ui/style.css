@@ -455,3 +455,9 @@ body { display: flex; }
 .status-info { color: var(--text-muted); background: var(--surface2); border: 1px solid var(--border); }
 .status-ok { color: var(--green); background: rgba(78,203,138,.07); border: 1px solid rgba(78,203,138,.22); }
 .status-error { color: var(--red); background: rgba(224,80,96,.07); border: 1px solid rgba(224,80,96,.22); }
+
+.subagent-live-body { padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
+.subagent-live-text { font-size: 11px; color: var(--text-main); white-space: pre-wrap; word-break: break-word; line-height: 1.5; font-family: var(--font-mono, monospace); }
+.subagent-live-think { font-size: 10.5px; color: var(--text-dim); white-space: pre-wrap; font-style: italic; opacity: .75; font-family: var(--font-mono, monospace); line-height: 1.4; }
+.subagent-live-tool { font-size: 10.5px; color: var(--text-dim); padding: 2px 0; display: flex; align-items: center; gap: 4px; }
+.subagent-live-tool.done { color: var(--green, #4ecb8a); }

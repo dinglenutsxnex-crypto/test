@@ -813,18 +813,81 @@ function createSubagentPill(agentId, task, context, group) {
 
     let expanded = false;
     let panel = null;
+    let liveBody = null;
+
+    const _ensurePanel = () => {
+        if (panel) return;
+        panel = document.createElement('div');
+        panel.className = 'tool-expand-panel';
+        liveBody = document.createElement('div');
+        liveBody.className = 'subagent-live-body';
+        panel.appendChild(liveBody);
+        wrapper.appendChild(panel);
+    };
 
     div.onclick = () => {
-        if (!panel) return;
+        _ensurePanel();
         expanded = !expanded;
         panel.classList.toggle('open', expanded);
         div.classList.toggle('tool-pill-open', expanded);
     };
 
+    div._liveEvent = (ev) => {
+        _ensurePanel();
+        if (!expanded) {
+            expanded = true;
+            panel.classList.add('open');
+            div.classList.add('tool-pill-open');
+        }
+        const sub = ev.subtype;
+        if (sub === 'text' && ev.data) {
+            let textNode = liveBody._lastText;
+            if (!textNode) {
+                textNode = document.createElement('div');
+                textNode.className = 'subagent-live-text';
+                liveBody.appendChild(textNode);
+                liveBody._lastText = textNode;
+            }
+            textNode.textContent += ev.data;
+        } else if (sub === 'thinking' && ev.data) {
+            liveBody._lastText = null;
+            let thinkNode = liveBody._lastThink;
+            if (!thinkNode) {
+                thinkNode = document.createElement('div');
+                thinkNode.className = 'subagent-live-think';
+                liveBody.appendChild(thinkNode);
+                liveBody._lastThink = thinkNode;
+            }
+            thinkNode.textContent += ev.data;
+        } else if (sub === 'tool_use') {
+            liveBody._lastText = null;
+            liveBody._lastThink = null;
+            const pill = document.createElement('div');
+            pill.className = 'subagent-live-tool';
+            pill.textContent = '\u2022 ' + (ev.name || '?');
+            pill.dataset.tcId = ev.tc_id || '';
+            liveBody.appendChild(pill);
+            liveBody._lastToolPill = pill;
+        } else if (sub === 'tool_done') {
+            const existing = ev.tc_id && liveBody.querySelector(`[data-tc-id="${ev.tc_id}"]`);
+            const p = existing || liveBody._lastToolPill;
+            if (p) p.classList.add('done');
+        }
+        scrollBottom();
+    };
+
     div._setResult = (result) => {
+        _ensurePanel();
+        if (liveBody) liveBody.remove();
         const inputText = (context ? 'context:\n' + context + '\n\n---\n\ntask:\n' : 'task:\n') + task;
-        panel = _makeExpandPanel(inputText, result);
-        wrapper.appendChild(panel);
+        const sec1 = document.createElement('div');
+        sec1.className = 'tool-expand-section';
+        sec1.innerHTML = '<div class="tool-expand-label">input</div><pre class="tool-expand-pre">' + escHtml(inputText) + '</pre>';
+        const sec2 = document.createElement('div');
+        sec2.className = 'tool-expand-section';
+        sec2.innerHTML = '<div class="tool-expand-label">output</div><pre class="tool-expand-pre">' + escHtml(result) + '</pre>';
+        panel.appendChild(sec1);
+        panel.appendChild(sec2);
     };
 
     container.appendChild(wrapper);
@@ -905,6 +968,7 @@ async function send() {
     let toolPill      = null;
     let toolGroup     = null;
     let assistantText = '';
+    const activePills = {};
     let loadingDiv    = null;
 
     if (isActive()) {
@@ -1000,16 +1064,64 @@ async function send() {
                         if (loadingDiv) { loadingDiv.remove(); loadingDiv = null; }
                         if (thinkingBlock) { sealThinking(thinkingBlock); thinkingBlock = null; }
                         if (assistantDiv) { sealAssistant(assistantDiv, assistantText); assistantDiv = null; assistantText = ''; }
-                        // Bug fix: always start a fresh tool-group after a thinking/text block
-                        // so new pills are never inserted into an old group above the thinking block.
-                        toolGroup = createToolGroup();
-                        if (toolPill) toolPill.classList.add('done');
-                        toolPill = createToolPill(ev.name, ev.args, toolGroup);
+                        if (!toolGroup) toolGroup = createToolGroup();
+                        const pill = createToolPill(ev.name, ev.args, toolGroup);
+                        if (ev.tc_id) activePills[ev.tc_id] = pill;
+                        toolPill = pill;
                         break;
                     }
                     case 'subagent_start': {
                         if (!isActive()) break;
-                        // subagent_start always fires right after tool_use (which already made a group)
+                        if (!toolGroup) toolGroup = createToolGroup();
+                        const spawnPill = (ev.key && activePills[ev.key]) || toolPill;
+                        if (spawnPill) {
+                            const sp = spawnPill.querySelector('.tool-spinner');
+                            if (sp) sp.outerHTML = '<span class="tool-check">\u2713</span>';
+                        }
+                        const sPill = createSubagentPill(ev.agent, ev.task||'', ev.context||'', toolGroup);
+                        if (ev.key) activePills[ev.key] = sPill;
+                        toolPill = sPill;
+                        break;
+                    }
+                    case 'subagent_stream': {
+                        if (!isActive()) break;
+                        const target = ev.key && activePills[ev.key];
+                        if (target && typeof target._liveEvent === 'function') target._liveEvent(ev);
+                        break;
+                    }
+                    case 'subagent_done': {
+                        if (!isActive()) break;
+                        const dPill = (ev.key && activePills[ev.key]) || toolPill;
+                        if (dPill) {
+                            if (typeof dPill._setResult === 'function') dPill._setResult(ev.result||'');
+                            const sp = dPill.querySelector('.tool-spinner');
+                            if (sp) sp.outerHTML = '<span class="tool-check">\u2713</span>';
+                            dPill.classList.add('done');
+                        }
+                        if (ev.key) delete activePills[ev.key];
+                        break;
+                    }
+                    case 'tool_done': {
+                        if (!isActive()) break;
+                        const tPill = (ev.tc_id && activePills[ev.tc_id]) || toolPill;
+                        if (tPill) {
+                            if (typeof tPill._setResult === 'function') tPill._setResult(ev.result||'');
+                            const spinner = tPill.querySelector('.tool-spinner');
+                            if (spinner) spinner.outerHTML = '<span class="tool-check">\u2713</span>';
+                        }
+                        if (ev.tc_id) delete activePills[ev.tc_id];
+                        break;
+                    }
+                    case 'heartbeat': {
+                        break;
+                    }
+
+                    case 'history_update': {
+                        if (chat) {
+                            chat.history = ev.history;
+                            saveChats();
+                            if (isActive()) updateContextBadge();
+                        }
                         // so toolGroup is guaranteed to exist here.
                         if (!toolGroup) toolGroup = createToolGroup();
                         // The tool_use pill above is already showing the spawn_agent call;

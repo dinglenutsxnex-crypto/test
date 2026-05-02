@@ -154,13 +154,76 @@ For simple questions, answer in 1-2 sentences. Only elaborate when the task genu
 Never start responses with affirmations like "Sure!", "Great!", "Of course!", "Absolutely!" etc."""
 
 _DEFAULT_INDEX_JSON = [
-    {"id": "build",   "name": "build",   "description": "Full access — code, write, run commands",     "file": "build.md",   "no_tools": False, "denied_tools": []},
-    {"id": "plan",    "name": "plan",    "description": "Read-only analysis — no file writes",          "file": "plan.md",    "no_tools": False, "denied_tools": ["write", "edit", "shell"]},
-    {"id": "explore", "name": "explore", "description": "Search & read only — fast codebase nav",       "file": "explore.md", "no_tools": False, "denied_tools": ["write", "edit", "shell", "web_search", "web_fetch"]},
-    {"id": "ask",     "name": "ask",     "description": "No tools — pure Q&A, no file access",          "file": "ask.md",     "no_tools": True,  "denied_tools": []},
+    {"id": "build",             "name": "build",             "description": "Full access — code, write, run commands",             "file": "build.md",             "no_tools": False, "denied_tools": []},
+    {"id": "build-supercharged","name": "build-supercharged","description": "Parallel multi-agent orchestrator — spawns specialists",  "file": "build-supercharged.md","no_tools": False, "denied_tools": []},
+    {"id": "plan",              "name": "plan",              "description": "Read-only analysis — no file writes",                   "file": "plan.md",              "no_tools": False, "denied_tools": ["write", "edit", "shell"]},
+    {"id": "explore",           "name": "explore",           "description": "Search & read only — fast codebase nav",                "file": "explore.md",           "no_tools": False, "denied_tools": ["write", "edit", "shell", "web_search", "web_fetch"]},
+    {"id": "ask",               "name": "ask",               "description": "No tools — pure Q&A, no file access",                  "file": "ask.md",               "no_tools": True,  "denied_tools": []},
 ]
 
 _DEFAULT_AGENT_MDS = {
+    "build-supercharged.md": """You are in BUILD-SUPERCHARGED mode — a parallel multi-agent orchestrator.
+
+Your job is to decompose large tasks and dispatch isolated work to specialist subagents simultaneously using spawn_agent. You have full tool access yourself, but your primary power is parallel delegation.
+
+## When to use subagents
+
+Spawn subagents when the task has naturally independent pieces that do NOT touch the same files:
+- UI work and server logic that don't share a file
+- Multiple independent features or bug fixes
+- A scout agent fetching context while another plans
+- One agent per major module or service
+
+Do NOT spawn subagents for:
+- Tasks that are a single linear sequence (just do it yourself)
+- When work in agent A depends on the output of agent B before it can start (chain them, don't parallelize)
+- More than 5 agents at once
+
+## Collision prevention — CRITICAL
+
+Before spawning, mentally partition the file ownership:
+- Each subagent must have exclusive ownership of its files. Zero overlap.
+- If two pieces of work touch the same file, they are NOT independent. Serialize them or merge into one agent.
+- State the file ownership partition in your plan before spawning.
+
+Example safe partition:
+  Agent 1 owns: src/ui/*, src/components/*
+  Agent 2 owns: src/server/*, src/api/*
+  Agent 3 owns: tests/*, README.md
+
+Example UNSAFE: both agents edit `src/config.ts` — this will corrupt the file.
+
+## How to orchestrate
+
+1. Read enough of the codebase yourself to understand the structure (use glob, grep, read).
+2. Write a 3-line partition plan: which agent owns which files/dirs.
+3. Issue all independent spawn_agent calls IN THE SAME RESPONSE so they run in parallel.
+4. Each subagent task must be fully self-contained: include file paths, exact requirements, and any shared context they need — they have zero memory of this conversation.
+5. After all agents complete, review their outputs and do any integration work yourself (e.g. updating a shared index or config that only one agent should touch).
+
+## Subagent prompting rules
+
+- Be explicit about file paths. "Edit the auth handler" is useless. "Edit src/server/auth.py, function handle_login()" is correct.
+- Tell each agent exactly what output to return (e.g. "Return the final content of the file" or "Return a summary of changes made").
+- Pass relevant context in the context field — error messages, related snippets, prior agent output — rather than making the agent re-read things.
+- Use `build` for agents that write code, `explore` for agents that only need to read/search, `plan` for agents that need to produce a plan without writing.
+
+## Parallel call syntax
+
+Issue multiple spawn_agent calls in one response. They will execute concurrently:
+
+  spawn_agent(agent_id="build", task="Implement POST /api/users in src/server/routes/users.py. Create the route handler, validate input, write to DB. Return final file content.", context="Schema: {id, name, email}")
+  spawn_agent(agent_id="build", task="Add the Users page component to src/ui/pages/Users.jsx. Include a form for name+email, POST to /api/users on submit. Return final file content.", context="API endpoint: POST /api/users, body: {name, email}")
+
+These run at the same time. You will be blocked until both finish, then you can integrate.
+
+## What NOT to do
+
+- Do not spawn one agent then wait for it before spawning the next if they are independent
+- Do not give two agents overlapping file ownership
+- Do not spawn agents for trivial one-liner tasks — just do it yourself
+- Do not cascade more than 2 levels deep (subagents cannot spawn further subagents)""",
+
     "build.md": """You are in BUILD mode — full read/write/execute access.
 
 You can read files, write files, edit files, run shell commands, search the web, and explore GitHub repos.
@@ -290,6 +353,13 @@ def _load_agents() -> dict:
     if not entries:
         entries = _DEFAULT_INDEX_JSON
 
+    # Inject built-in agents that may be missing from older on-disk index.json
+    _BUILTIN_INJECT = {e["id"]: e for e in _DEFAULT_INDEX_JSON}
+    existing_ids = {e.get("id") for e in entries}
+    for bid, bentry in _BUILTIN_INJECT.items():
+        if bid not in existing_ids:
+            entries.append(bentry)
+
     profiles = {}
     for entry in entries:
         agent_id = entry.get("id", "")
@@ -342,7 +412,7 @@ SPAWN_AGENT_TOOL = {
             "properties": {
                 "agent_id": {
                     "type": "string",
-                    "enum": ["build", "plan", "explore", "ask"],
+                    "enum": ["build", "build-supercharged", "plan", "explore", "ask"],
                     "description": "Which agent profile to run"
                 },
                 "task": {
@@ -373,7 +443,11 @@ def get_tools_for_agent(agent_name: str) -> list:
     if profile.get("no_tools", False):
         return []
     denied = profile.get("denied_tools", [])
-    return [t for t in TOOLS if t["function"]["name"] not in denied]
+    tools = [t for t in TOOLS if t["function"]["name"] not in denied]
+    # Only give spawn_agent to agents that can delegate (build and plan)
+    if agent_name in ("build", "build-supercharged", "plan") and "spawn_agent" not in denied:
+        tools.append(SPAWN_AGENT_TOOL)
+    return tools
 
 TOOLS = [
     {
@@ -922,6 +996,172 @@ def tool_shell(command, cwd=None):
         return f"Shell error: {e}"
 
 
+_subagent_semaphore = __import__("threading").Semaphore(5)
+
+
+def run_subagent_streaming(agent_id: str, task: str, context: str = "",
+                           working_dirs: list = None, model: str = None,
+                           depth: int = 0, on_event=None) -> str:
+    """
+    Streaming version of run_subagent. Calls on_event(dict) for every
+    meaningful event (text chunk, tool_use, tool_done) so the UI can
+    render the subagent's activity live. Returns final text result.
+    """
+    MAX_DEPTH = 2
+
+    profile = AGENT_PROFILES.get(agent_id)
+    if not profile:
+        return f"Error: unknown agent '{agent_id}'"
+
+    active_tools = get_tools_for_agent(agent_id)
+    if depth >= MAX_DEPTH:
+        active_tools = [t for t in active_tools
+                        if t["function"]["name"] != "spawn_agent"]
+
+    dirs = working_dirs or ([working_dir] if working_dir else [])
+    agent_suffix = profile.get("system_suffix", "")
+    base_prompt  = (SYSTEM_PROMPT_BASE + "\n\n") if SYSTEM_PROMPT_BASE else ""
+
+    if dirs:
+        hints = []
+        for d in dirs:
+            try:
+                files = sorted(os.listdir(d))[:30]
+                hints.append(f"Folder: {d}\n" + "\n".join(files))
+            except Exception:
+                hints.append(f"Folder: {d} (unreadable)")
+        dir_info = "\n\n".join(hints)
+        system_content = f"{base_prompt}You are a subagent. {dir_info}\n\n---\n{agent_suffix}"
+    else:
+        system_content = f"{base_prompt}You are a subagent.\n\n---\n{agent_suffix}"
+
+    user_content = task
+    if context:
+        user_content = f"Context:\n{context}\n\n---\n\nTask:\n{task}"
+
+    messages = [
+        {"role": "system",  "content": system_content},
+        {"role": "user",    "content": user_content},
+    ]
+
+    def _emit(evt):
+        if on_event:
+            try:
+                on_event(evt)
+            except Exception:
+                pass
+
+    for _round in range(20):
+        payload = {
+            "model":      model or MODEL,
+            "messages":   messages,
+            "max_tokens": MAX_TOKENS,
+            "stream":     True,
+        }
+        if active_tools:
+            payload["tools"]       = active_tools
+            payload["tool_choice"] = "auto"
+
+        try:
+            resp = requests.post(API_URL, json=payload, stream=True, timeout=300)
+            resp.raise_for_status()
+        except Exception as e:
+            return f"Error: subagent API call failed: {e}"
+
+        tool_calls_acc = {}
+        round_content  = ""
+
+        for raw in resp.iter_lines():
+            if not raw:
+                continue
+            line = raw.decode("utf-8", errors="replace")
+            if not line.startswith("data: "):
+                continue
+            data_str = line[6:].strip()
+            if data_str == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+
+            choice = (chunk.get("choices") or [{}])[0]
+            delta  = choice.get("delta", {})
+
+            thinking_chunk = (delta.get("reasoning_content") or
+                              delta.get("reasoning") or
+                              delta.get("thinking") or "")
+            if thinking_chunk:
+                _emit({"subtype": "thinking", "data": thinking_chunk})
+
+            content_chunk = delta.get("content") or ""
+            if content_chunk:
+                round_content += content_chunk
+                _emit({"subtype": "text", "data": content_chunk})
+
+            for tc_delta in delta.get("tool_calls", []):
+                idx = tc_delta.get("index", 0)
+                if idx not in tool_calls_acc:
+                    tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+                if tc_delta.get("id"):
+                    tool_calls_acc[idx]["id"] = tc_delta["id"]
+                fn = tc_delta.get("function", {})
+                if fn.get("name"):
+                    tool_calls_acc[idx]["name"] += fn["name"]
+                if fn.get("arguments"):
+                    tool_calls_acc[idx]["arguments"] += fn["arguments"]
+
+        if not tool_calls_acc:
+            return round_content.strip() or "(subagent returned no output)"
+
+        tc_list = []
+        for idx in sorted(tool_calls_acc.keys()):
+            tc = tool_calls_acc[idx]
+            tc_id = tc["id"] or f"sub-tc-{_round}-{idx}"
+            tc_list.append({
+                "id": tc_id,
+                "type": "function",
+                "function": {"name": tc["name"], "arguments": tc["arguments"]}
+            })
+
+        messages.append({"role": "assistant", "content": round_content,
+                         "tool_calls": tc_list})
+
+        for tc in tc_list:
+            fn_name = tc["function"]["name"]
+            try:
+                args = json.loads(tc["function"]["arguments"])
+            except json.JSONDecodeError:
+                args = {}
+
+            _emit({"subtype": "tool_use", "name": fn_name, "args": args,
+                   "tc_id": tc["id"]})
+
+            if fn_name == "spawn_agent":
+                result = run_subagent_streaming(
+                    agent_id     = args.get("agent_id", "build"),
+                    task         = args.get("task", ""),
+                    context      = args.get("context", ""),
+                    working_dirs = working_dirs,
+                    model        = model,
+                    depth        = depth + 1,
+                    on_event     = on_event,
+                )
+            else:
+                result = run_tool(fn_name, args)
+
+            _emit({"subtype": "tool_done", "name": fn_name, "tc_id": tc["id"],
+                   "result": result})
+
+            messages.append({
+                "role":         "tool",
+                "tool_call_id": tc["id"],
+                "content":      result,
+            })
+
+    return "(subagent hit round limit without producing a final answer)"
+
+
 def run_subagent(agent_id: str, task: str, context: str = "",
                  working_dirs: list = None, model: str = None,
                  depth: int = 0) -> str:
@@ -1316,33 +1556,73 @@ def chat():
                 flat_asst["reasoning_content"] = round_reasoning
             messages.append(flat_asst)
 
+            # ── Parallel tool execution ────────────────────────────────
+            import threading
+            import queue as _queue_mod
+
+            ev_queue   = _queue_mod.Queue()
+            tc_results = {}   # tc_id -> result string
+            tc_args_map = {}  # tc_id -> (fn_name, args)
+
+            # Announce all tool calls immediately so UI can render pills
             for tc in tc_list:
                 fn_name = tc["function"]["name"]
                 try:
                     args = json.loads(tc["function"]["arguments"])
                 except json.JSONDecodeError:
                     args = {}
-
-                yield f"data: {json.dumps({'type': 'tool_use', 'name': fn_name, 'args': args})}\n\n"
+                tc_args_map[tc["id"]] = (fn_name, args)
+                yield f"data: {json.dumps({'type': 'tool_use', 'name': fn_name, 'args': args, 'tc_id': tc['id']})}\n\n"
                 if fn_name == "spawn_agent":
-                    sub_agent_id = args.get("agent_id", "build")
-                    sub_task     = args.get("task", "")
-                    sub_context  = args.get("context", "")
-                    yield f"data: {json.dumps({'type': 'subagent_start', 'agent': sub_agent_id, 'task': sub_task, 'context': sub_context})}\n\n"
-                    result = run_subagent(
-                        agent_id    = sub_agent_id,
-                        task        = sub_task,
-                        context     = sub_context,
-                        working_dirs= dirs,
-                        model       = model,
-                    )
-                    yield f"data: {json.dumps({'type': 'subagent_done', 'agent': sub_agent_id, 'result': result[:4000]})}\n\n"
+                    yield f"data: {json.dumps({'type': 'subagent_start', 'key': tc['id'], 'agent': args.get('agent_id','build'), 'task': args.get('task',''), 'context': args.get('context','')})}\n\n"
+
+            def _run_tc(tc):
+                fn_name, args = tc_args_map[tc["id"]]
+                if fn_name == "spawn_agent":
+                    with _subagent_semaphore:
+                        def _on_event(evt):
+                            ev_queue.put({"_evt": True, "key": tc["id"], **evt})
+                        result = run_subagent_streaming(
+                            agent_id     = args.get("agent_id", "build"),
+                            task         = args.get("task", ""),
+                            context      = args.get("context", ""),
+                            working_dirs = dirs,
+                            model        = model,
+                            depth        = 0,
+                            on_event     = _on_event,
+                        )
                 else:
                     result = run_tool(fn_name, args)
-                # Truncate result for SSE (full result still goes to model via messages)
-                yield f"data: {json.dumps({'type': 'tool_done', 'name': fn_name, 'result': result[:4000] if result else ''})}\n\n"
+                ev_queue.put({"_done": True, "tc_id": tc["id"]})
+                tc_results[tc["id"]] = result or ""
 
-                # Rich tool-result turn
+            threads = []
+            for tc in tc_list:
+                t = threading.Thread(target=_run_tc, args=(tc,), daemon=True)
+                t.start()
+                threads.append(t)
+
+            done_count = 0
+            while done_count < len(tc_list):
+                try:
+                    evt = ev_queue.get(timeout=0.15)
+                except _queue_mod.Empty:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                    continue
+                if evt.get("_done"):
+                    done_count += 1
+                    tc_id      = evt["tc_id"]
+                    fn_name, args = tc_args_map[tc_id]
+                    result     = tc_results.get(tc_id, "")
+                    if fn_name == "spawn_agent":
+                        yield f"data: {json.dumps({'type': 'subagent_done', 'key': tc_id, 'agent': args.get('agent_id','build'), 'result': result[:4000]})}\n\n"
+                    yield f"data: {json.dumps({'type': 'tool_done', 'name': fn_name, 'tc_id': tc_id, 'result': result[:4000]})}\n\n"
+                elif evt.get("_evt"):
+                    yield f"data: {json.dumps({'type': 'subagent_stream', 'key': evt['key'], 'subtype': evt.get('subtype'), 'data': evt.get('data'), 'name': evt.get('name'), 'args': evt.get('args'), 'tc_id': evt.get('tc_id'), 'result': evt.get('result','')[:500] if evt.get('result') else None})}\n\n"
+
+            for tc in tc_list:
+                fn_name, args = tc_args_map[tc["id"]]
+                result = tc_results.get(tc["id"], "")
                 tr_turn = {
                     "id": _next_id(chat_id, "tr"),
                     "role": "tool",

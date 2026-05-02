@@ -21,7 +21,7 @@
     "description": "Search & read only — fast codebase nav",
     "file": "explore.md",
     "no_tools": false,
-    "denied_tools": ["write", "edit", "shell", "web_search", "web_fetch", "spawn_agent"]
+    "denied_tools": ["write", "edit", "shell", "web_search", "web_fetch"]
   },
   {
     "id": "ask",
@@ -29,14 +29,6 @@
     "description": "No tools — pure Q&A, no file access",
     "file": "ask.md",
     "no_tools": true,
-    "denied_tools": []
-  },
-  {
-    "id": "caveman",
-    "name": "caveman",
-    "description": "talks less, consice and brute",
-    "file": "caveman.md",
-    "no_tools": false,
     "denied_tools": []
   }
 ]
