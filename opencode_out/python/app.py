@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import shutil
 import glob as glob_module
 import fnmatch
 import requests
@@ -101,11 +102,12 @@ def get_opencode_dir():
             try:
                 with open(storage_file, "r") as f:
                     external_path = f.read().strip()
-                if external_path and os.path.isdir(external_path):
+                if external_path:
                     # external_path already IS the opencode dir (Java writes
                     # /sdcard/opencode into storage_dir.txt, not just /sdcard)
                     os.makedirs(external_path, exist_ok=True)
-                    return external_path
+                    if os.path.isdir(external_path):
+                        return external_path
             except Exception:
                 pass
     base = "/storage/emulated/0"
@@ -158,7 +160,28 @@ _DEFAULT_INDEX_JSON = [
 ]
 
 
+def _copy_missing_prompts(src: str, dst: str) -> None:
+    if not os.path.isdir(src):
+        return
+    os.makedirs(dst, exist_ok=True)
+    for root, dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        target_root = dst if rel == "." else os.path.join(dst, rel)
+        os.makedirs(target_root, exist_ok=True)
+        for name in files:
+            target = os.path.join(target_root, name)
+            if not os.path.exists(target):
+                shutil.copy2(os.path.join(root, name), target)
+
+
 def get_prompts_dir() -> str:
+    local_prompts = os.path.join(get_opencode_dir(), "prompts")
+    try:
+        _copy_missing_prompts(_BUNDLED_PROMPTS, local_prompts)
+    except Exception:
+        pass
+    if os.path.isfile(os.path.join(local_prompts, "system.md")) or os.path.isfile(os.path.join(local_prompts, "agents", "index.json")):
+        return local_prompts
     return _BUNDLED_PROMPTS
 
 
@@ -171,14 +194,29 @@ def _load_system_prompt() -> str:
         return _DEFAULT_SYSTEM_MD.strip()
 
 
+def _load_agent_index(path: str) -> list:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            entries = json.load(f)
+        return entries if isinstance(entries, list) else []
+    except Exception:
+        return []
+
+
 def _load_agents() -> dict:
     agents_dir = os.path.join(get_prompts_dir(), "agents")
     index_path = os.path.join(agents_dir, "index.json")
-    try:
-        with open(index_path, "r", encoding="utf-8") as f:
-            entries = json.load(f)
-    except Exception:
-        entries = _DEFAULT_INDEX_JSON
+    entries = _load_agent_index(index_path)
+    if not entries:
+        entries = list(_DEFAULT_INDEX_JSON)
+
+    bundled_index = os.path.join(_BUNDLED_PROMPTS, "agents", "index.json")
+    if os.path.abspath(index_path) != os.path.abspath(bundled_index):
+        existing_ids = {entry.get("id") for entry in entries}
+        for entry in _load_agent_index(bundled_index):
+            if entry.get("id") and entry.get("id") not in existing_ids:
+                entries.append(entry)
+                existing_ids.add(entry.get("id"))
 
     profiles = {}
     for entry in entries:
@@ -186,11 +224,16 @@ def _load_agents() -> dict:
         if not agent_id:
             continue
         md_file = os.path.join(agents_dir, entry.get("file", f"{agent_id}.md"))
+        bundled_md_file = os.path.join(_BUNDLED_PROMPTS, "agents", entry.get("file", f"{agent_id}.md"))
         try:
             with open(md_file, "r", encoding="utf-8") as f:
                 system_suffix = f.read().strip()
         except Exception:
-            system_suffix = f"You are in {agent_id.upper()} mode."
+            try:
+                with open(bundled_md_file, "r", encoding="utf-8") as f:
+                    system_suffix = f.read().strip()
+            except Exception:
+                system_suffix = f"You are in {agent_id.upper()} mode."
 
         profiles[agent_id] = {
             "name":          entry.get("name", agent_id),
@@ -206,54 +249,64 @@ SYSTEM_PROMPT_BASE = _load_system_prompt()
 AGENT_PROFILES     = _load_agents()
 
 def reload_agents():
-    global SYSTEM_PROMPT_BASE, AGENT_PROFILES
+    global SYSTEM_PROMPT_BASE, AGENT_PROFILES, SPAWN_AGENT_TOOL
     SYSTEM_PROMPT_BASE = _load_system_prompt()
     AGENT_PROFILES     = _load_agents()
+    SPAWN_AGENT_TOOL   = make_spawn_agent_tool()
+    if "TOOLS" in globals():
+        for i, tool in enumerate(TOOLS):
+            if tool["function"]["name"] == "spawn_agent":
+                TOOLS[i] = SPAWN_AGENT_TOOL
+                break
 
-SPAWN_AGENT_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "spawn_agent",
-        "description": (
-            "Delegate a self-contained task to a specialized subagent. "
-            "The subagent runs to completion and returns its full output. "
-            "Use this to parallelize work, delegate read-only analysis before writing, "
-            "or break large tasks into focused subtasks.\n\n"
-            "Agents:\n"
-            "- build: full read/write/execute — use for actual code changes\n"
-            "- plan: read-only analysis — use to map out changes before build does them\n"
-            "- explore: read-only, no web — use for fast structural questions about the codebase\n"
-            "- ask: no tools at all — use for pure reasoning, summarization, or drafting"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "agent_id": {
-                    "type": "string",
-                    "enum": ["build", "build-supercharged", "plan", "explore", "ask"],
-                    "description": "Which agent profile to run"
+def make_spawn_agent_tool():
+    agents = sorted(AGENT_PROFILES.keys()) or ["build"]
+    agent_lines = [
+        f"- {agent_id}: {profile.get('description', '')}".rstrip()
+        for agent_id, profile in sorted(AGENT_PROFILES.items())
+    ]
+    return {
+        "type": "function",
+        "function": {
+            "name": "spawn_agent",
+            "description": (
+                "Delegate a self-contained task to a specialized subagent. "
+                "The subagent runs to completion and returns its full output. "
+                "Use this to parallelize work, delegate read-only analysis before writing, "
+                "or break large tasks into focused subtasks.\n\n"
+                "Agents:\n" + "\n".join(agent_lines)
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "enum": agents,
+                        "description": "Which agent profile to run"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": (
+                            "The complete task description. Be specific - the subagent has no "
+                            "context from the main conversation. Include file paths, exact "
+                            "requirements, and expected output format."
+                        )
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": (
+                            "Optional extra context to prepend to the task, such as a relevant "
+                            "file snippet, error message, or prior subagent output."
+                        )
+                    }
                 },
-                "task": {
-                    "type": "string",
-                    "description": (
-                        "The complete task description. Be specific — the subagent has no "
-                        "context from the main conversation. Include file paths, exact "
-                        "requirements, and expected output format."
-                    )
-                },
-                "context": {
-                    "type": "string",
-                    "description": (
-                        "Optional extra context to prepend to the task — e.g. paste in a "
-                        "relevant file snippet, an error message, or a prior subagent's "
-                        "output that this agent needs."
-                    )
-                }
-            },
-            "required": ["agent_id", "task"]
+                "required": ["agent_id", "task"]
+            }
         }
     }
-}
+
+
+SPAWN_AGENT_TOOL = make_spawn_agent_tool()
 
 def get_tools_for_agent(agent_name: str) -> list:
     fallback = list(AGENT_PROFILES.values())[0] if AGENT_PROFILES else {}
@@ -261,13 +314,10 @@ def get_tools_for_agent(agent_name: str) -> list:
     if profile.get("no_tools", False):
         return []
     denied = profile.get("denied_tools", [])
-    tools = [t for t in TOOLS if t["function"]["name"] not in denied]
-    # Only give spawn_agent to agents that can delegate (build and plan)
-    if agent_name in ("build", "build-supercharged", "plan") and "spawn_agent" not in denied:
-        tools.append(SPAWN_AGENT_TOOL)
-    return tools
+    return [t for t in TOOLS if t["function"]["name"] not in denied]
 
 TOOLS = [
+    SPAWN_AGENT_TOOL,
     {
         "type": "function",
         "function": {
@@ -331,6 +381,43 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "rg",
+            "description": "Run bundled ripgrep directly without shell wrapping. Use this for fast regex text search.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Regex pattern to search for"},
+                    "path": {"type": "string", "description": "Directory or file to search (defaults to all working directories)"},
+                    "glob": {"type": "string", "description": "Optional include/exclude glob, e.g. '*.py' or '!*.min.js'"},
+                    "case_insensitive": {"type": "boolean", "description": "Use case-insensitive search", "default": False},
+                    "context": {"type": "integer", "description": "Context lines before and after matches", "default": 0},
+                    "max_results": {"type": "integer", "description": "Maximum output lines to return", "default": 200}
+                },
+                "required": ["pattern"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fd",
+            "description": "Run bundled fd directly without shell wrapping. Use this for fast file and directory search.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Search pattern (defaults to all files)", "default": ""},
+                    "path": {"type": "string", "description": "Directory to search (defaults to all working directories)"},
+                    "extension": {"type": "string", "description": "Optional file extension filter, e.g. py, js, kt"},
+                    "type": {"type": "string", "description": "Optional result type: file or directory"},
+                    "hidden": {"type": "boolean", "description": "Include hidden files", "default": False},
+                    "max_results": {"type": "integer", "description": "Maximum output lines to return", "default": 200}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "read",
             "description": "Read the contents of a file.",
             "parameters": {
@@ -380,7 +467,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "shell",
-            "description": "Run a shell command using toybox (a lightweight Unix toolbox). Supports common commands: ls, cat, cp, mv, rm, mkdir, rmdir, find, grep, sed, awk, sort, uniq, head, tail, wc, echo, pwd, chmod, touch, diff, tar, gzip, and more. Commands run in the working directory. Use this for file operations, text processing, or exploring the filesystem.",
+            "description": "Run a shell command through Android sh. Bundled toybox and Android system commands are on PATH. Prefer the rg and fd tools for search.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -388,6 +475,21 @@ TOOLS = [
                     "cwd": {"type": "string", "description": "Working directory override (defaults to project working directory)"}
                 },
                 "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "python_exec",
+            "description": "Execute Python code in the app's Chaquopy Python interpreter. Use this for scripts, JSON processing, file transforms, and calculations.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "Python code or expression to execute"},
+                    "cwd": {"type": "string", "description": "Working directory override (defaults to project working directory)"}
+                },
+                "required": ["code"]
             }
         }
     },
@@ -763,9 +865,231 @@ def _get_toybox_path():
     return None
 
 
+def _get_native_lib_dir():
+    for p in [
+        "/data/data/com.opencode.app/files/native_lib_dir.txt",
+        "/data/user/0/com.opencode.app/files/native_lib_dir.txt",
+    ]:
+        if os.path.isfile(p):
+            try:
+                with open(p) as f:
+                    path = f.read().strip()
+                if path and os.path.isdir(path):
+                    return path
+            except Exception:
+                pass
+    return ""
+
+
+def _app_files_dir():
+    for p in ["/data/data/com.opencode.app/files", "/data/user/0/com.opencode.app/files"]:
+        if os.path.isdir(p):
+            return p
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _native_tool_path(binary: str) -> str:
+    native_dir = _get_native_lib_dir()
+    path = os.path.join(native_dir, binary) if native_dir else ""
+    if path and os.path.isfile(path):
+        try:
+            os.chmod(path, 0o755)
+        except Exception:
+            pass
+        return path
+    return ""
+
+
+def _setup_cli_path():
+    native_dir = _get_native_lib_dir()
+    bin_dir = os.path.join(_app_files_dir(), "bin")
+    os.makedirs(bin_dir, exist_ok=True)
+
+    tools = {
+        "rg": "librg-bin.so",
+        "fd": "libfd-bin.so",
+    }
+    toybox = _get_toybox_path()
+    if toybox:
+        tools["toybox"] = os.path.basename(toybox)
+
+    for stale in ["jq"]:
+        stale_path = os.path.join(bin_dir, stale)
+        if os.path.exists(stale_path):
+            try:
+                os.remove(stale_path)
+            except Exception:
+                pass
+
+    for name, binary in tools.items():
+        real = toybox if name == "toybox" else os.path.join(native_dir, binary)
+        wrapper = os.path.join(bin_dir, name)
+        if not real or not os.path.isfile(real):
+            continue
+        try:
+            os.chmod(real, 0o755)
+        except Exception:
+            pass
+        try:
+            with open(wrapper, "w", encoding="utf-8") as f:
+                f.write(f'#!/system/bin/sh\nexec "{real}" "$@"\n')
+            os.chmod(wrapper, 0o755)
+        except Exception:
+            pass
+
+    env = os.environ.copy()
+    path_parts = [bin_dir, native_dir, env.get("PATH", ""), "/system/bin", "/system/xbin"]
+    env["PATH"] = ":".join(p for p in path_parts if p)
+    return env
+
+
+def _tool_work_dirs(path=None):
+    dirs = working_dirs if working_dirs else ([working_dir] if working_dir else [])
+    if path:
+        base = resolve_path(path, dirs[0] if dirs else None) if dirs else path
+        if not base or not os.path.exists(base):
+            return [], f"Error: Path not found: {path}"
+        if dirs and not any(is_within_dir(base, d) for d in dirs):
+            return [], f"Error: Path '{path}' is outside all working directories"
+        return [base], None
+    if not dirs:
+        return [], "No working directory set."
+    return dirs, None
+
+
+def _run_direct_binary(binary, args, cwd=None, timeout=30):
+    import subprocess
+    exe = _native_tool_path(binary)
+    if not exe:
+        return f"Error: bundled binary not available: {binary}"
+    try:
+        result = subprocess.run(
+            [exe] + args,
+            cwd=cwd if cwd and os.path.isdir(cwd) else None,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        output = result.stdout
+        if result.stderr:
+            output += ("\n" if output else "") + result.stderr
+        if not output.strip():
+            return f"(exit code {result.returncode}, no output)"
+        if len(output) > 20000:
+            output = output[:20000] + "\n... (truncated)"
+        return output
+    except subprocess.TimeoutExpired:
+        return f"Error: command timed out after {timeout} seconds"
+    except Exception as e:
+        return f"Error running {binary}: {e}"
+
+
+def tool_rg(pattern, path=None, glob=None, case_insensitive=False, context=0, max_results=200):
+    targets, err = _tool_work_dirs(path)
+    if err:
+        return err
+    args = ["--line-number", "--color", "never"]
+    if case_insensitive:
+        args.append("--ignore-case")
+    try:
+        context = int(context or 0)
+    except Exception:
+        context = 0
+    if context > 0:
+        args += ["--context", str(min(context, 20))]
+    if glob:
+        args += ["--glob", str(glob)]
+    args += [pattern] + targets
+    output = _run_direct_binary("librg-bin.so", args, cwd=targets[0])
+    lines = output.splitlines()
+    try:
+        max_results = int(max_results or 200)
+    except Exception:
+        max_results = 200
+    if max_results > 0 and len(lines) > max_results:
+        return "\n".join(lines[:max_results]) + f"\n... ({len(lines) - max_results} more lines)"
+    return output
+
+
+def tool_fd(pattern="", path=None, extension=None, type=None, hidden=False, max_results=200):
+    targets, err = _tool_work_dirs(path)
+    if err:
+        return err
+    args = ["--color", "never"]
+    if hidden:
+        args.append("--hidden")
+    if extension:
+        args += ["--extension", str(extension).lstrip(".")]
+    if type in ("file", "f"):
+        args += ["--type", "file"]
+    elif type in ("directory", "dir", "d"):
+        args += ["--type", "directory"]
+    args.append(pattern or "")
+    args += targets
+    output = _run_direct_binary("libfd-bin.so", args, cwd=targets[0])
+    lines = output.splitlines()
+    try:
+        max_results = int(max_results or 200)
+    except Exception:
+        max_results = 200
+    if max_results > 0 and len(lines) > max_results:
+        return "\n".join(lines[:max_results]) + f"\n... ({len(lines) - max_results} more lines)"
+    return output
+
+
+def tool_python_exec(code, cwd=None):
+    import io
+    import traceback
+    import contextlib
+    global working_dir, working_dirs
+
+    run_cwd = cwd or working_dir or None
+    if run_cwd and not os.path.isdir(run_cwd):
+        run_cwd = None
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    old_cwd = os.getcwd()
+    scope = {
+        "__name__": "__tool__",
+        "os": os,
+        "json": json,
+        "re": re,
+        "working_dir": working_dir,
+        "working_dirs": working_dirs,
+    }
+    try:
+        if run_cwd:
+            os.chdir(run_cwd)
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            try:
+                result = eval(compile(code, "<python_exec>", "eval"), scope, scope)
+                if result is not None:
+                    print(repr(result))
+            except SyntaxError:
+                exec(compile(code, "<python_exec>", "exec"), scope, scope)
+    except Exception:
+        stderr.write(traceback.format_exc())
+    finally:
+        try:
+            os.chdir(old_cwd)
+        except Exception:
+            pass
+
+    output = stdout.getvalue()
+    err = stderr.getvalue()
+    if err:
+        output += ("\n" if output else "") + err
+    output = output.strip()
+    if not output:
+        return "(python completed, no output)"
+    if len(output) > 20000:
+        output = output[:20000] + "\n... (truncated)"
+    return output
+
+
 def tool_shell(command, cwd=None):
     import subprocess
-    import shlex
     global working_dir
 
     toybox = _get_toybox_path()
@@ -776,26 +1100,15 @@ def tool_shell(command, cwd=None):
     if run_cwd and not os.path.isdir(run_cwd):
         run_cwd = None
 
-    try:
-        parts = shlex.split(command.strip())
-    except ValueError as e:
-        return f"Parse error: {e}"
-
-    if not parts:
+    command = command.strip()
+    if not command:
         return "Empty command."
-
-    if parts[0] == "toybox":
-        parts = parts[1:]
-    if not parts:
-        parts = ["help"]
-
-    if parts[0] in ("--help", "-h", "help"):
-        parts = ["help"]
 
     try:
         result = subprocess.run(
-            [toybox] + parts,
+            ["/system/bin/sh", "-c", command],
             cwd=run_cwd,
+            env=_setup_cli_path(),
             capture_output=True,
             text=True,
             timeout=30,
@@ -1098,6 +1411,24 @@ def run_tool(name, args):
             result = tool_glob(args.get("pattern", "*"), args.get("path"))
         elif name == "grep":
             result = tool_grep(args.get("pattern", ""), args.get("path"), args.get("include"))
+        elif name == "rg":
+            result = tool_rg(
+                args.get("pattern", ""),
+                args.get("path"),
+                args.get("glob"),
+                args.get("case_insensitive", False),
+                args.get("context", 0),
+                args.get("max_results", 200),
+            )
+        elif name == "fd":
+            result = tool_fd(
+                args.get("pattern", ""),
+                args.get("path"),
+                args.get("extension"),
+                args.get("type"),
+                args.get("hidden", False),
+                args.get("max_results", 200),
+            )
         elif name == "read":
             result = tool_read(args.get("filePath", ""), args.get("offset"), args.get("limit"))
         elif name == "write":
@@ -1108,6 +1439,8 @@ def run_tool(name, args):
             result = tool_edit(args.get("filePath", ""), args.get("oldString", ""), args.get("newString", ""), args.get("replaceAll", False))
         elif name == "shell":
             result = tool_shell(args.get("command", ""), args.get("cwd"))
+        elif name == "python_exec":
+            result = tool_python_exec(args.get("code", ""), args.get("cwd"))
         elif name == "spawn_agent":
             dirs = working_dirs if working_dirs else ([working_dir] if working_dir else [])
             result = run_subagent(
@@ -1463,10 +1796,13 @@ def chat():
             for t in new_rich_turns:
                 history.append(t)
 
-            if len(history) > 40:
-                chat_histories[chat_id] = history[-40:]
-            else:
-                chat_histories[chat_id] = history
+            trimmed = history[-40:] if len(history) > 40 else history
+            # Drop leading non-user turns left dangling by the slice
+            # (orphaned tool results / assistant messages whose matching
+            # tool_call context was cut off). Sending those causes 400.
+            while trimmed and trimmed[0].get("role") != "user":
+                trimmed = trimmed[1:]
+            chat_histories[chat_id] = trimmed
 
 
         yield f"data: {json.dumps({'type': 'history_update', 'history': chat_histories[chat_id]})}\n\n"
