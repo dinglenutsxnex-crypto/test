@@ -56,3 +56,13 @@ assistant: [grep for existing tests, then write new ones]
 ```
 
 4 lines max for text responses. Less is more.
+
+
+## When to Ask for Help
+
+Instead of guessing, say:
+- "I'm uncertain about X, can you clarify?"
+- "I don't see an example for Y in the codebase"
+- "This approach might not work because of Z"
+
+Asking is better than outputting wrong code.
