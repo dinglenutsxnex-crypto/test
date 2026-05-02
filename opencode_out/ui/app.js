@@ -734,6 +734,7 @@ function _toolPillLabel(name, args) {
     if (name === 'shell')       return 'running&nbsp;<em>' + escHtml(args.command||'') + '</em>';
     if (name === 'web_fetch')   return 'fetching&nbsp;<em>' + escHtml(args.url||'') + '</em>';
     if (name === 'github_walk') return 'github&nbsp;<em>' + escHtml(args.repo||'') + '</em>';
+    if (name === 'spawn_agent') return 'spawning&nbsp;<em>' + escHtml(args.agent_id||'agent') + '</em>';
     return 'running&nbsp;<em>' + escHtml(name) + '</em>';
 }
 
@@ -834,11 +835,6 @@ function createSubagentPill(agentId, task, context, group) {
 
     div._liveEvent = (ev) => {
         _ensurePanel();
-        if (!expanded) {
-            expanded = true;
-            panel.classList.add('open');
-            div.classList.add('tool-pill-open');
-        }
         const sub = ev.subtype;
         if (sub === 'text' && ev.data) {
             let textNode = liveBody._lastText;
@@ -873,12 +869,12 @@ function createSubagentPill(agentId, task, context, group) {
             const p = existing || liveBody._lastToolPill;
             if (p) p.classList.add('done');
         }
-        scrollBottom();
+        if (expanded) scrollBottom();
     };
 
     div._setResult = (result) => {
         _ensurePanel();
-        if (liveBody) liveBody.remove();
+        panel.innerHTML = '';
         const inputText = (context ? 'context:\n' + context + '\n\n---\n\ntask:\n' : 'task:\n') + task;
         const sec1 = document.createElement('div');
         sec1.className = 'tool-expand-section';
