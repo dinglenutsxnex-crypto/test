@@ -1578,23 +1578,28 @@ def chat():
 
             def _run_tc(tc):
                 fn_name, args = tc_args_map[tc["id"]]
-                if fn_name == "spawn_agent":
-                    with _subagent_semaphore:
-                        def _on_event(evt):
-                            ev_queue.put({"_evt": True, "key": tc["id"], **evt})
-                        result = run_subagent_streaming(
-                            agent_id     = args.get("agent_id", "build"),
-                            task         = args.get("task", ""),
-                            context      = args.get("context", ""),
-                            working_dirs = dirs,
-                            model        = model,
-                            depth        = 0,
-                            on_event     = _on_event,
-                        )
-                else:
-                    result = run_tool(fn_name, args)
-                ev_queue.put({"_done": True, "tc_id": tc["id"]})
-                tc_results[tc["id"]] = result or ""
+                result = ""
+                try:
+                    if fn_name == "spawn_agent":
+                        with _subagent_semaphore:
+                            def _on_event(evt):
+                                ev_queue.put({"_evt": True, "key": tc["id"], **evt})
+                            result = run_subagent_streaming(
+                                agent_id     = args.get("agent_id", "build"),
+                                task         = args.get("task", ""),
+                                context      = args.get("context", ""),
+                                working_dirs = dirs,
+                                model        = model,
+                                depth        = 0,
+                                on_event     = _on_event,
+                            )
+                    else:
+                        result = run_tool(fn_name, args)
+                except Exception as e:
+                    result = f"Error: {e}"
+                finally:
+                    tc_results[tc["id"]] = result if isinstance(result, str) else str(result)
+                    ev_queue.put({"_done": True, "tc_id": tc["id"]})
 
             threads = []
             for tc in tc_list:

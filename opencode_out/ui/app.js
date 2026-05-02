@@ -1122,49 +1122,6 @@ async function send() {
                             saveChats();
                             if (isActive()) updateContextBadge();
                         }
-                        // so toolGroup is guaranteed to exist here.
-                        if (!toolGroup) toolGroup = createToolGroup();
-                        // The tool_use pill above is already showing the spawn_agent call;
-                        // replace its spinner with a checkmark so only the subagent pill spins.
-                        if (toolPill) {
-                            const sp = toolPill.querySelector('.tool-spinner');
-                            if (sp) sp.outerHTML = '<span class="tool-check">\u2713</span>';
-                        }
-                        toolPill = createSubagentPill(ev.agent, ev.task||'', ev.context||'', toolGroup);
-                        break;
-                    }
-                    case 'subagent_done': {
-                        if (!isActive()) break;
-                        if (toolPill) {
-                            if (typeof toolPill._setResult === 'function') toolPill._setResult(ev.result||'');
-                            const sp = toolPill.querySelector('.tool-spinner');
-                            if (sp) sp.outerHTML = '<span class="tool-check">\u2713</span>';
-                            toolPill.classList.add('done');
-                            toolPill = null;
-                        }
-                        toolGroup = null;
-                        break;
-                    }
-                    case 'tool_done': {
-                        if (!isActive()) break;
-                        if (toolPill) {
-                            if (typeof toolPill._setResult === 'function') toolPill._setResult(ev.result||'');
-                            const spinner = toolPill.querySelector('.tool-spinner');
-                            if (spinner) spinner.outerHTML = '<span class="tool-check">\u2713</span>';
-                        }
-                        break;
-                    }
-                    case 'heartbeat': {
-                        break;
-                    }
-
-                    case 'history_update': {
-                        // Overwrites the partial streaming history with the authoritative version.
-                        if (chat) {
-                            chat.history = ev.history;
-                            saveChats();
-                            if (isActive()) updateContextBadge();
-                        }
                         break;
                     }
                     case 'error': {
