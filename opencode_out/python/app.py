@@ -1796,13 +1796,10 @@ def chat():
             for t in new_rich_turns:
                 history.append(t)
 
-            trimmed = history[-40:] if len(history) > 40 else history
-            # Drop leading non-user turns left dangling by the slice
-            # (orphaned tool results / assistant messages whose matching
-            # tool_call context was cut off). Sending those causes 400.
-            while trimmed and trimmed[0].get("role") != "user":
-                trimmed = trimmed[1:]
-            chat_histories[chat_id] = trimmed
+            if len(history) > 40:
+                chat_histories[chat_id] = history[-40:]
+            else:
+                chat_histories[chat_id] = history
 
 
         yield f"data: {json.dumps({'type': 'history_update', 'history': chat_histories[chat_id]})}\n\n"

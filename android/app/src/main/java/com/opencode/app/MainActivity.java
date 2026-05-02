@@ -163,6 +163,11 @@ public class MainActivity extends Activity {
     private void extractToybox() {
         try {
             String nativeDir = getApplicationInfo().nativeLibraryDir;
+            File nativeDirFile = new File(getFilesDir(), "native_lib_dir.txt");
+            java.io.FileWriter nw = new java.io.FileWriter(nativeDirFile);
+            nw.write(nativeDir);
+            nw.close();
+
             File toybox = new File(nativeDir, "libtoybox.so");
             if (!toybox.exists()) return;
             File pathFile = new File(getFilesDir(), "toybox_path.txt");
